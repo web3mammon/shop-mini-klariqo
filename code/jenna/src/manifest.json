@@ -1,0 +1,18 @@
+{
+  "name": "Jenna",
+  "description": "Your personal AI fashion stylist - shop with your voice",
+  "permissions": ["MICROPHONE", "CAMERA"],
+  "scopes": [
+    "openid",
+    "profile",
+    "product_list:read",
+    "product_list:write",
+    "products:recommendations:read",
+    "orders"
+  ],
+  "privacy_policy_url": "https://klariqo.com/privacy",
+  "terms_url": "https://klariqo.com/terms",
+  "trusted_domains": [
+    "btqccksigmohyjdxgrrj.supabase.co"
+  ]
+}

@@ -1,0 +1,1271 @@
+// xhr deprecated - removed
+// serve replaced with Deno.serve
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { buildVoiceOptimizedPrompt, normalizeForTTS } from "../_shared/voice-utils.ts";
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type'
+};
+// FlexPrice API configuration
+const FLEXPRICE_API_KEY = Deno.env.get('FLEXPRICE_API_KEY');
+const FLEXPRICE_BASE_URL = Deno.env.get('FLEXPRICE_BASE_URL') || 'https://api.cloud.flexprice.io/v1';
+// Convert PCM to WAV by adding WAV header (same as marketing-edge-function)
+function pcmToWav(pcmData, sampleRate, numChannels = 1, bitsPerSample = 16) {
+  const byteRate = sampleRate * numChannels * bitsPerSample / 8;
+  const blockAlign = numChannels * bitsPerSample / 8;
+  const dataSize = pcmData.length;
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  // RIFF identifier
+  view.setUint32(0, 0x52494646, false); // "RIFF"
+  // File length
+  view.setUint32(4, 36 + dataSize, true);
+  // RIFF type
+  view.setUint32(8, 0x57415645, false); // "WAVE"
+  // Format chunk identifier
+  view.setUint32(12, 0x666d7420, false); // "fmt "
+  // Format chunk length
+  view.setUint32(16, 16, true);
+  // Sample format (raw)
+  view.setUint16(20, 1, true);
+  // Channel count
+  view.setUint16(22, numChannels, true);
+  // Sample rate
+  view.setUint32(24, sampleRate, true);
+  // Byte rate
+  view.setUint32(28, byteRate, true);
+  // Block align
+  view.setUint16(32, blockAlign, true);
+  // Bits per sample
+  view.setUint16(34, bitsPerSample, true);
+  // Data chunk identifier
+  view.setUint32(36, 0x64617461, false); // "data"
+  // Data chunk length
+  view.setUint32(40, dataSize, true);
+  // Combine header + PCM data
+  const wavFile = new Uint8Array(header.byteLength + pcmData.length);
+  wavFile.set(new Uint8Array(header), 0);
+  wavFile.set(pcmData, header.byteLength);
+  return wavFile;
+}
+const sessions = new Map();
+Deno.serve(async (req)=>{
+  if (req.method === 'OPTIONS') {
+    return new Response(null, {
+      headers: corsHeaders
+    });
+  }
+  const { headers } = req;
+  const upgradeHeader = headers.get("upgrade") || "";
+  if (upgradeHeader.toLowerCase() !== "websocket") {
+    return new Response("Expected WebSocket connection", {
+      status: 400
+    });
+  }
+  const url = new URL(req.url);
+  const clientId = url.searchParams.get('client_id');
+  if (!clientId) {
+    return new Response("client_id parameter required", {
+      status: 400
+    });
+  }
+  console.log(`[WebSocket] Connection request for client: ${clientId}`);
+  // Load client from database
+  const supabaseClient = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
+  const { data: client, error: clientError } = await supabaseClient.from('voice_ai_clients').select('*').eq('client_id', clientId).eq('status', 'active').single();
+  if (clientError || !client) {
+    console.error('[WebSocket] Client not found or inactive:', clientId);
+    return new Response("Client not found or inactive", {
+      status: 404
+    });
+  }
+  const { socket, response } = Deno.upgradeWebSocket(req);
+  const sessionId = crypto.randomUUID();
+  socket.onopen = async ()=>{
+    console.log(`[WebSocket] Connected - Session: ${sessionId}`);
+    // Create session immediately (minimal blocking)
+    const session = {
+      clientId: clientId,
+      client: client,
+      voiceProfile: null,
+      chatId: null,
+      transcript: [],
+      startTime: Date.now(),
+      conversationHistory: [],
+      assemblyaiConnection: null,
+      isProcessing: false,
+      keepaliveInterval: null
+    };
+    sessions.set(sessionId, session);
+    // Set up keepalive ping every 30 seconds to prevent idle timeout
+    session.keepaliveInterval = setInterval(()=>{
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'ping'
+        }));
+        console.log('[Keepalive] Ping sent');
+      }
+    }, 30000);
+    // Initialize AssemblyAI connection FIRST (critical path)
+    const assemblyaiReady = await initializeAssemblyAI(sessionId, socket);
+    if (!assemblyaiReady) {
+      console.error('[WebSocket] Failed to initialize AssemblyAI');
+      socket.send(JSON.stringify({
+        type: 'error',
+        message: 'Failed to initialize voice recognition'
+      }));
+      socket.close();
+      return;
+    }
+    // Send connection established immediately
+    socket.send(JSON.stringify({
+      type: 'connection.established',
+      sessionId,
+      message: `${client.business_name} Voice AI ready`
+    }));
+    console.log(`[WebSocket] Session initialized: ${sessionId}`);
+    // Background operations (non-blocking)
+    // Load voice profile in background
+    if (client.voice_id) {
+      supabaseClient.from('voice_profiles').select('*').eq('voice_id', client.voice_id).single().then(({ data: profile, error: profileError })=>{
+        if (profileError) {
+          console.error('[WebSocket] Failed to load voice profile:', profileError);
+        } else {
+          session.voiceProfile = profile;
+          console.log(`[WebSocket] ✅ Voice profile loaded: ${profile.name} (${profile.accent})`);
+        }
+      });
+    }
+    // Check user access in background
+    checkUserAccess(client).then((accessCheck)=>{
+      if (!accessCheck.allowed) {
+        console.log(`[Access] ❌ Access denied - ${accessCheck.reason}`);
+        // Determine rejection message based on reason
+        let rejectionMessage = '';
+        if (accessCheck.reason === 'trial_minutes_exhausted') {
+          rejectionMessage = 'You have reached your trial limit. Please upgrade your account to continue.';
+        } else if (accessCheck.reason === 'trial_expired_time') {
+          rejectionMessage = 'Your 3-day free trial has expired. Please visit your dashboard to upgrade your plan and continue using our service.';
+        } else if (accessCheck.reason === 'trial_expired_credits') {
+          rejectionMessage = 'You have used all 10 free trial chats. Please visit your dashboard to upgrade your plan and continue chatting.';
+        } else {
+          rejectionMessage = 'Your account has run out of credits. Please visit your dashboard to add more credits or upgrade your plan.';
+        }
+        socket.send(JSON.stringify({
+          type: 'error',
+          message: rejectionMessage
+        }));
+        socket.close();
+      } else {
+        console.log(`[Access] ✅ Access granted - ${accessCheck.reason}`);
+      }
+    });
+    // Play intro audio in background
+    playIntroAudio(sessionId, socket, supabaseClient).catch((err)=>console.error('[IntroAudio] Background play error:', err));
+  };
+  socket.onmessage = async (event)=>{
+    try {
+      const session = sessions.get(sessionId);
+      if (!session) {
+        console.error('[WebSocket] Session not found:', sessionId);
+        return;
+      }
+      const data = JSON.parse(event.data);
+      switch(data.type){
+        // Keepalive pong response
+        case 'pong':
+          console.log('[Keepalive] Pong received from client');
+          break;
+        // NLC format
+        case 'audio.chunk':
+          await handleAudioChunk(sessionId, data.audio, socket);
+          break;
+        // Python backend format (marketingdemo compatibility)
+        case 'audio_data':
+          await handleAudioChunk(sessionId, data.audio, socket);
+          break;
+        case 'start_recording':
+          console.log('[WebSocket] Recording started');
+          break;
+        case 'stop_recording':
+          console.log('[WebSocket] Recording stopped');
+          break;
+        case 'interrupt':
+          await handleInterrupt(sessionId, socket);
+          break;
+        // Session end (both formats)
+        case 'session.end':
+        case 'end_session':
+          await handleEndSession(sessionId, socket);
+          break;
+        default:
+          console.warn('[WebSocket] Unknown message type:', data.type);
+      }
+    } catch (error) {
+      console.error('[WebSocket] Message handling error:', error);
+      socket.send(JSON.stringify({
+        type: 'error',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      }));
+    }
+  };
+  socket.onclose = async ()=>{
+    console.log(`[WebSocket] Connection closed - Session: ${sessionId}`);
+    const session = sessions.get(sessionId);
+    await saveSessionToDatabase(sessionId);
+    // Fire-and-forget cleanup operations (non-blocking)
+    // Extract and save lead information from conversation
+    if (session && session.conversationHistory.length > 0) {
+      extractAndSaveLead(session, supabaseClient).catch((err)=>console.error('[Lead] Background extraction error:', err));
+      // Process calendar booking if conversation contains booking intent
+      processCalendarBooking(session, sessionId, supabaseClient).catch((err)=>console.error('[Booking] Background booking error:', err));
+    }
+    // Track usage event in FlexPrice (for paid plans analytics - future)
+    if (session && session.chatId && session.client.user_id) {
+      const duration = Math.floor((Date.now() - session.startTime) / 1000);
+      trackFlexPriceEvent(session.client.user_id, session.chatId, duration).catch((err)=>console.error('[FlexPrice] Background tracking error:', err));
+    }
+    if (session?.assemblyaiConnection) {
+      session.assemblyaiConnection.close();
+    }
+    // Clear keepalive interval
+    if (session?.keepaliveInterval) {
+      clearInterval(session.keepaliveInterval);
+      console.log('[Keepalive] Interval cleared');
+    }
+    sessions.delete(sessionId);
+  };
+  socket.onerror = (error)=>{
+    console.error('[WebSocket] Error:', error);
+  };
+  return response;
+});
+async function initializeAssemblyAI(sessionId, clientSocket) {
+  const session = sessions.get(sessionId);
+  if (!session) return false;
+  const ASSEMBLYAI_API_KEY = Deno.env.get('ASSEMBLYAI_API_KEY');
+  if (!ASSEMBLYAI_API_KEY) {
+    console.error('[AssemblyAI] API key not configured');
+    return false;
+  }
+  try {
+    const params = new URLSearchParams({
+      sample_rate: '24000',
+      format_turns: 'true',
+      end_of_turn_confidence_threshold: '0.7',
+      min_end_of_turn_silence_when_confident: '160',
+      max_turn_silence: '1000',
+      inactivity_timeout: '900',
+      token: ASSEMBLYAI_API_KEY
+    });
+    const assemblyaiWs = new WebSocket(`wss://streaming.assemblyai.com/v3/ws?${params}`);
+    const connectionPromise = new Promise((resolve)=>{
+      const timeout = setTimeout(()=>{
+        console.error('[AssemblyAI] Connection timeout');
+        resolve(false);
+      }, 10000);
+      assemblyaiWs.onopen = ()=>{
+        clearTimeout(timeout);
+        console.log('[AssemblyAI] Connected');
+        session.assemblyaiConnection = assemblyaiWs;
+        resolve(true);
+      };
+      assemblyaiWs.onerror = (error)=>{
+        clearTimeout(timeout);
+        console.error('[AssemblyAI] Connection error:', error);
+        resolve(false);
+      };
+    });
+    assemblyaiWs.onmessage = async (event)=>{
+      try {
+        const data = JSON.parse(event.data);
+        const msgType = data.type;
+        if (msgType === 'Begin') {
+          console.log(`[AssemblyAI] Session began: ID=${data.id}`);
+        } else if (msgType === 'Turn') {
+          const transcript = data.transcript || '';
+          const isFormatted = data.turn_is_formatted;
+          if (transcript && transcript.trim()) {
+            console.log(`[AssemblyAI] ${isFormatted ? 'Formatted' : 'Partial'}: ${transcript}`);
+            // Send all transcripts to widget (both partial and formatted for live display)
+            clientSocket.send(JSON.stringify({
+              type: 'transcript.user',
+              text: transcript,
+              isFinal: isFormatted
+            }));
+            if (isFormatted && !session.isProcessing) {
+              session.isProcessing = true;
+              session.transcript.push({
+                role: 'customer',
+                content: transcript,
+                timestamp: new Date().toISOString()
+              });
+              await processWithGPT(sessionId, transcript, clientSocket);
+            }
+          }
+        } else if (msgType === 'Termination') {
+          console.log(`[AssemblyAI] Session terminated: Audio=${data.audio_duration_seconds}s`);
+        }
+      } catch (error) {
+        console.error('[AssemblyAI] Message parsing error:', error);
+      }
+    };
+    assemblyaiWs.onclose = (event)=>{
+      console.log(`[AssemblyAI] Connection closed: code=${event.code}, reason="${event.reason}", wasClean=${event.wasClean}`);
+    };
+    return await connectionPromise;
+  } catch (error) {
+    console.error('[AssemblyAI] Connection error:', error);
+    return false;
+  }
+}
+async function handleAudioChunk(sessionId, audioBase64, socket) {
+  const session = sessions.get(sessionId);
+  if (!session || !session.assemblyaiConnection) return;
+  try {
+    const audioData = Uint8Array.from(atob(audioBase64), (c)=>c.charCodeAt(0));
+    if (session.assemblyaiConnection.readyState === WebSocket.OPEN) {
+      session.assemblyaiConnection.send(audioData);
+    }
+  } catch (error) {
+    console.error('[Audio] Error processing chunk:', error);
+  }
+}
+async function processWithGPT(sessionId, userInput, socket) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
+  if (!GROQ_API_KEY) {
+    console.error('[GPT-OSS] Groq API key not configured');
+    session.isProcessing = false;
+    return;
+  }
+  // Build voice-optimized system prompt using voice profile
+  const systemPrompt = session.voiceProfile ? buildVoiceOptimizedPrompt({
+    business_name: session.client.business_name,
+    region: session.client.region,
+    industry: session.client.industry,
+    system_prompt: session.client.system_prompt,
+    channel_type: 'website',
+    business_hours: session.client.business_hours,
+    timezone: session.client.timezone,
+    // Transfer fields (website = email fallback only, no actual transfer)
+    call_transfer_enabled: session.client.call_transfer_enabled,
+    call_transfer_number: session.client.call_transfer_number,
+    email: session.client.email
+  }, session.voiceProfile) : buildVoiceOptimizedPromptFallback(session); // Fallback if no voice profile
+  try {
+    const messages = [
+      {
+        role: 'system',
+        content: systemPrompt
+      },
+      ...session.conversationHistory.slice(-10),
+      {
+        role: 'user',
+        content: userInput
+      }
+    ];
+    console.log('[GPT-OSS] Sending streaming request to Groq...');
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-20b',
+        messages,
+        max_tokens: 500,
+        temperature: 0.7,
+        stream: true
+      }),
+      signal: AbortSignal.timeout(30000) // 30 second timeout
+    });
+    if (!response.ok) {
+      throw new Error(`Groq API error: ${response.status}`);
+    }
+    // Stream the response with sentence-based chunking (EXACT Shopify logic)
+    const reader = response.body?.getReader();
+    const decoder = new TextDecoder();
+    let fullResponse = '';
+    let textBuffer = '';
+    let audioChunkIndex = 0;
+    if (reader) {
+      while(true){
+        const { done, value } = await reader.read();
+        if (done) break;
+        const chunk = decoder.decode(value);
+        const lines = chunk.split('\n').filter((line)=>line.trim() !== '');
+        for (const line of lines){
+          if (line.startsWith('data: ')) {
+            const data = line.slice(6);
+            if (data === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(data);
+              const delta = parsed.choices[0]?.delta;
+              if (delta?.content) {
+                const chunkText = delta.content;
+                fullResponse += chunkText;
+                textBuffer += chunkText;
+                // Check for sentence endings (punctuation + space to avoid decimals)
+                const sentenceEndPattern = /[.!?]\s/;
+                const hasSentenceEnding = sentenceEndPattern.test(textBuffer);
+                if (hasSentenceEnding) {
+                  let lastEndingPos = -1;
+                  for(let i = 0; i < textBuffer.length - 1; i++){
+                    const char = textBuffer[i];
+                    const nextChar = textBuffer[i + 1];
+                    if ((char === '.' || char === '!' || char === '?') && /\s/.test(nextChar)) {
+                      lastEndingPos = i;
+                    }
+                  }
+                  if (lastEndingPos !== -1) {
+                    const sentenceChunk = textBuffer.substring(0, lastEndingPos + 1).trim();
+                    const remainingText = textBuffer.substring(lastEndingPos + 1).trim();
+                    if (sentenceChunk) {
+                      console.log(`[GPT-Stream] Sentence: "${sentenceChunk}"`);
+                      // Check socket state before sending
+                      if (socket.readyState !== WebSocket.OPEN) {
+                        console.log('[GPT-Stream] Socket closed, aborting stream');
+                        return;
+                      }
+                      socket.send(JSON.stringify({
+                        type: 'text.chunk',
+                        text: sentenceChunk
+                      }));
+                      // Generate TTS sequentially to guarantee chunk order
+                      await generateSpeechChunk(sessionId, sentenceChunk, socket, audioChunkIndex++);
+                      textBuffer = remainingText;
+                    }
+                  }
+                }
+              }
+            } catch (e) {
+            // Skip invalid JSON
+            }
+          }
+        }
+      }
+    }
+    // Send any remaining text
+    if (textBuffer.trim()) {
+      console.log(`[GPT-Stream] Final chunk: "${textBuffer}"`);
+      // Check socket state before sending
+      if (socket.readyState !== WebSocket.OPEN) {
+        console.log('[GPT-Stream] Socket closed, aborting final chunk');
+        return;
+      }
+      socket.send(JSON.stringify({
+        type: 'text.chunk',
+        text: textBuffer.trim()
+      }));
+      await generateSpeechChunk(sessionId, textBuffer.trim(), socket, audioChunkIndex++);
+    }
+    const aiResponse = fullResponse || 'I apologize, I didn\'t catch that.';
+    // Don't send text.complete - widget doesn't use it
+    // Widget displays messages via text.chunk only
+    socket.send(JSON.stringify({
+      type: 'audio.complete',
+      total_chunks: audioChunkIndex
+    }));
+    // Update conversation history
+    // Remove booking markers from response before storing
+    const cleanedAiResponse = aiResponse.replace(/BOOKING_APPOINTMENT[\s\S]*?(?=\n\n|$)/g, '').trim();
+    session.conversationHistory.push({
+      role: 'user',
+      content: userInput
+    }, {
+      role: 'assistant',
+      content: cleanedAiResponse
+    });
+    session.transcript.push({
+      role: 'assistant',
+      content: aiResponse,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    console.error('[GPT-OSS] Error:', error);
+    socket.send(JSON.stringify({
+      type: 'error',
+      message: 'Failed to process request'
+    }));
+  } finally{
+    session.isProcessing = false;
+  }
+}
+async function generateSpeechChunk(sessionId, text, socket, chunkIndex) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  const ELEVENLABS_API_KEY = Deno.env.get('ELEVENLABS_API_KEY');
+  if (!ELEVENLABS_API_KEY) {
+    console.error('[ElevenLabs] API key not configured');
+    return;
+  }
+  // Use client's voice_id from their config
+  const voiceId = session.client.voice_id || 'pNInz6obpgDQGcFmaJgB'; // Default to Adam (US voice)
+  // Strip URLs and normalize numbers
+  let speechText = text.replace(/\[URL:.*?\]/gi, '');
+  speechText = speechText.replace(/https?:\/\/[^\s]+/gi, '');
+  speechText = speechText.replace(/\s+/g, ' ').trim();
+  speechText = normalizeForTTS(speechText);
+  if (!speechText) return;
+  try {
+    const startTime = Date.now();
+    console.log(`[ElevenLabs-Chunk #${chunkIndex}] Generating TTS for: "${speechText.substring(0, 50)}..."`);
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}?output_format=pcm_16000`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'audio/pcm',
+        'Content-Type': 'application/json',
+        'xi-api-key': ELEVENLABS_API_KEY
+      },
+      body: JSON.stringify({
+        text: speechText,
+        model_id: 'eleven_flash_v2_5',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0,
+          use_speaker_boost: true
+        }
+      })
+    });
+    if (!response.ok) {
+      console.error('[ElevenLabs] API error:', await response.text());
+      return;
+    }
+    const audioArrayBuffer = await response.arrayBuffer();
+    const pcmData = new Uint8Array(audioArrayBuffer);
+    // Convert PCM to WAV (add WAV header so browsers can play it)
+    const wavData = pcmToWav(pcmData, 16000, 1, 16);
+    // Convert to base64
+    let binary = '';
+    const chunkSize = 0x8000;
+    for(let i = 0; i < wavData.length; i += chunkSize){
+      const chunk = wavData.subarray(i, Math.min(i + chunkSize, wavData.length));
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    const audioBase64 = btoa(binary);
+    socket.send(JSON.stringify({
+      type: 'audio.chunk',
+      audio: audioBase64,
+      format: 'wav',
+      chunk_index: chunkIndex
+    }));
+    console.log(`[ElevenLabs-Chunk #${chunkIndex}] Sent WAV audio (${wavData.length} bytes) in ${Date.now() - startTime}ms`);
+  } catch (error) {
+    console.error(`[ElevenLabs-Chunk #${chunkIndex}] Error:`, error);
+  }
+}
+async function playIntroAudio(sessionId, socket, supabaseClient) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  try {
+    // Fetch pre-generated MP3 URL from widget_config
+    const { data: widgetConfig, error: widgetError } = await supabaseClient.from('widget_config').select('greeting_audio_url').eq('client_id', session.clientId).single();
+    if (widgetError || !widgetConfig?.greeting_audio_url) {
+      console.log('[IntroAudio] No pre-generated audio found, skipping intro');
+      return;
+    }
+    const audioUrl = widgetConfig.greeting_audio_url;
+    console.log(`[IntroAudio] Fetching pre-generated intro from: ${audioUrl}`);
+    // Fetch the pre-generated MP3 file from storage
+    const response = await fetch(audioUrl);
+    if (!response.ok) {
+      console.error('[IntroAudio] Failed to fetch audio:', response.status);
+      return;
+    }
+    const audioArrayBuffer = await response.arrayBuffer();
+    const bytes = new Uint8Array(audioArrayBuffer);
+    // Convert to base64
+    let binary = '';
+    const chunkSize = 0x8000;
+    for(let i = 0; i < bytes.length; i += chunkSize){
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
+    }
+    const audioBase64 = btoa(binary);
+    // Send intro audio to client
+    socket.send(JSON.stringify({
+      type: 'intro.audio',
+      audio: audioBase64,
+      format: 'mp3'
+    }));
+    console.log(`[IntroAudio] ✅ Sent pre-generated intro (${bytes.length} bytes)`);
+  } catch (error) {
+    console.error('[IntroAudio] Error:', error);
+  }
+}
+async function handleInterrupt(sessionId, socket) {
+  console.log('[Interrupt] User interrupted AI response');
+  const session = sessions.get(sessionId);
+  if (!session) return;
+  // Reset processing flag to cancel any pending TTS generation
+  session.isProcessing = false;
+  // Notify frontend that interrupt was processed
+  socket.send(JSON.stringify({
+    type: 'interrupt.acknowledged',
+    message: 'Interrupt processed'
+  }));
+  console.log('[Interrupt] AI interrupted, ready for new input');
+}
+async function handleEndSession(sessionId, socket) {
+  console.log('[Session] Ending:', sessionId);
+  const session = sessions.get(sessionId);
+  if (session?.assemblyaiConnection) {
+    session.assemblyaiConnection.close();
+  }
+  socket.send(JSON.stringify({
+    type: 'session.ended',
+    message: 'Session ended'
+  }));
+  socket.close();
+}
+async function saveSessionToDatabase(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session || session.transcript.length === 0) return;
+  const supabaseClient = createClient(Deno.env.get('SUPABASE_URL') ?? '', Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '');
+  try {
+    const duration = Math.floor((Date.now() - session.startTime) / 1000);
+    const transcriptText = session.transcript.map((t)=>t.content).join(' ');
+    const chatId = session.chatId || `chat_${sessionId}`;
+    await supabaseClient.from('chat_sessions').insert({
+      chat_id: chatId,
+      client_id: session.clientId,
+      start_time: new Date(session.startTime).toISOString(),
+      end_time: new Date().toISOString(),
+      duration_seconds: duration,
+      status: 'completed',
+      transcript: session.transcript,
+      transcript_summary: transcriptText.substring(0, 500),
+      message_count: session.transcript.length,
+      sentiment_score: calculateSentimentScore(transcriptText)
+    });
+    console.log('[Database] Chat session saved:', chatId);
+    // ========================================
+    // MINUTE-BASED TRACKING (Nov 1, 2025)
+    // ========================================
+    await trackMinuteUsage(session.clientId, duration, supabaseClient);
+  } catch (error) {
+    console.error('[Database] Error saving chat session:', error);
+  }
+}
+function calculateSentimentScore(text) {
+  const positive = [
+    'great',
+    'good',
+    'thanks',
+    'thank',
+    'excellent',
+    'happy',
+    'love',
+    'awesome',
+    'perfect'
+  ];
+  const negative = [
+    'bad',
+    'poor',
+    'terrible',
+    'angry',
+    'frustrated',
+    'hate',
+    'worst',
+    'awful'
+  ];
+  const lower = text.toLowerCase();
+  const positiveCount = positive.filter((w)=>lower.includes(w)).length;
+  const negativeCount = negative.filter((w)=>lower.includes(w)).length;
+  const totalWords = text.split(/\s+/).length;
+  if (totalWords === 0) return 0;
+  // Calculate score between -1.0 and 1.0
+  const score = (positiveCount - negativeCount) / Math.max(totalWords / 10, 1);
+  return Math.max(-1, Math.min(1, score)); // Clamp between -1 and 1
+}
+function extractTopic(text) {
+  const topics = {
+    'design': [
+      'design',
+      'branding',
+      'logo',
+      'creative'
+    ],
+    'web': [
+      'website',
+      'web',
+      'development',
+      'site'
+    ],
+    'marketing': [
+      'marketing',
+      'campaign',
+      'social'
+    ],
+    'pricing': [
+      'price',
+      'cost',
+      'quote',
+      'budget'
+    ]
+  };
+  const lower = text.toLowerCase();
+  let maxCount = 0;
+  let topic = 'general';
+  for (const [key, keywords] of Object.entries(topics)){
+    const count = keywords.filter((k)=>lower.includes(k)).length;
+    if (count > maxCount) {
+      maxCount = count;
+      topic = key;
+    }
+  }
+  return topic;
+}
+function buildVoiceOptimizedPromptFallback(session) {
+  const businessContext = session.client.system_prompt || `You are a helpful AI assistant for ${session.client.business_name}. Answer customer questions about our business, services, and help them with their needs.`;
+  return `${businessContext}
+
+CONVERSATION STYLE (CRITICAL - FOLLOW EXACTLY):
+- This is a VOICE conversation - speak naturally like a helpful human assistant
+- Keep EVERY response under 40 words maximum for voice clarity
+- Be conversational, warm, and professional
+- Use simple, clear language - avoid jargon unless necessary
+- Ask ONE question at a time if you need clarification
+
+LEAD CAPTURE (IMPORTANT - BUT CHILL ABOUT IT):
+**DO NOT ask for contact info right away!** Let the conversation flow naturally first.
+
+TIMING - Only ask for contact info AFTER:
+- You've had at least 3-5 back-and-forth exchanges with the customer
+- They've shown genuine interest in a service or asked meaningful questions
+- The conversation is going well and you've built some rapport
+- It feels NATURAL to ask (not forced)
+
+How to ask (casually):
+- Good: "By the way, I didn't catch your name?"
+- Good: "Oh, and what's your number? I'll make a note of it"
+- Good: "Want me to email that to you? What's your email?"
+- Bad: "I need your name and email" (too direct/pushy)
+- Bad: Asking in the first message (way too aggressive!)
+
+**Remember**: The goal is to HELP them first, capture info second. Build trust naturally.
+
+FORMATTING RULES (MUST FOLLOW):
+- NEVER use tables, bullet points, or formatted lists
+- NEVER use markdown formatting (**, __, etc.)
+- If you need to list items, say them naturally: "We offer three options: first, second, and third"
+- If you include URLs or links, wrap them in [URL: link-here] format so they aren't spoken aloud
+- For numbers, use words for small amounts (one, two, three) and digits for large amounts
+- For prices, say naturally: "twenty five dollars" not "$25"
+
+RESPONSE LENGTH:
+- Maximum 40 words per response
+- If the answer is long, give a brief summary and offer to explain more
+- Break complex topics into short, digestible chunks
+
+Remember: Users are LISTENING, not reading. Speak naturally and concisely.`;
+}
+// ============================================================================
+// LEAD CAPTURE FUNCTIONS
+// ============================================================================
+/**
+ * Extract lead information from conversation and save to database
+ */ async function extractAndSaveLead(session, supabaseClient) {
+  const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
+  if (!GROQ_API_KEY) {
+    console.log('[Lead Capture] Groq API key not found, skipping lead extraction');
+    return;
+  }
+  try {
+    // Build conversation transcript for analysis
+    const transcript = session.conversationHistory.map((msg)=>`${msg.role === 'user' ? 'Customer' : 'AI'}: ${msg.content}`).join('\n');
+    // Validate transcript is not empty
+    if (!transcript || transcript.trim().length === 0) {
+      console.log('[Lead Capture] Empty transcript, skipping');
+      return;
+    }
+    // Truncate if too long (Groq has token limits)
+    const maxLength = 8000; // ~2000 tokens
+    const truncatedTranscript = transcript.length > maxLength ? transcript.substring(0, maxLength) + '...[truncated]' : transcript;
+    console.log('[Lead Capture] Analyzing conversation for lead information...');
+    // Use LLM to extract lead information
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-20b',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a lead extraction assistant. Analyze the conversation and extract any customer contact information mentioned.
+
+Return ONLY a valid JSON object with these fields (use null if not found):
+{
+  "name": "customer name if mentioned",
+  "email": "email address if mentioned",
+  "phone": "phone number if mentioned",
+  "notes": "brief notes about what they were interested in or needed"
+}
+
+If NO contact information was shared at all, return: {"name": null, "email": null, "phone": null, "notes": null}
+
+Examples:
+- "Hi, I'm John" → {"name": "John", "email": null, "phone": null, "notes": null}
+- "My email is john@example.com" → {"name": null, "email": "john@example.com", "phone": null, "notes": null}
+- No info shared → {"name": null, "email": null, "phone": null, "notes": null}`
+          },
+          {
+            role: 'user',
+            content: `Extract lead information from this conversation:\n\n${truncatedTranscript}`
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 200
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error('[Lead Capture] Groq API error:', response.status, errorBody);
+      return;
+    }
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content?.trim();
+    if (!content) {
+      console.log('[Lead Capture] No content returned from LLM');
+      return;
+    }
+    // Parse JSON response
+    let leadData;
+    try {
+      leadData = JSON.parse(content);
+    } catch (e) {
+      console.error('[Lead Capture] Failed to parse LLM response:', content);
+      return;
+    }
+    // Only save if we have at least some information
+    if (!leadData.name && !leadData.email && !leadData.phone) {
+      console.log('[Lead Capture] No contact information found in conversation');
+      return;
+    }
+    // Save to database
+    const { error } = await supabaseClient.from('leads').insert({
+      client_id: session.clientId,
+      name: leadData.name || null,
+      email: leadData.email || null,
+      phone: leadData.phone || null,
+      notes: leadData.notes || null,
+      source: 'website',
+      session_id: session.chatId || null,
+      status: 'new'
+    });
+    if (error) {
+      console.error('[Lead Capture] Failed to save lead:', error);
+    } else {
+      console.log(`[Lead Capture] ✅ Lead saved: ${leadData.name || 'Unknown'}`);
+    }
+  } catch (error) {
+    console.error('[Lead Capture] Error during lead extraction:', error);
+  }
+}
+// ============================================================================
+// MINUTE-BASED PRICING TRACKING (NEW - November 1, 2025)
+// ============================================================================
+/**
+ * Track minute usage for chat sessions (minute-based pricing)
+ * Increments trial_minutes_used or paid_minutes_used depending on client's plan
+ */ async function trackMinuteUsage(clientId, durationSeconds, supabaseClient) {
+  try {
+    // Calculate minutes (always round UP - partial minutes count as full minutes)
+    const minutes = Math.ceil(durationSeconds / 60);
+    console.log(`[Minutes] Chat duration: ${durationSeconds}s = ${minutes} minute(s)`);
+    // Fetch current client data to check plan status
+    const { data: clientData, error: fetchError } = await supabaseClient.from('voice_ai_clients').select('client_id, trial_minutes, trial_minutes_used, paid_plan, paid_minutes_used, paid_minutes_included, dodo_customer_id').eq('client_id', clientId).single();
+    if (fetchError || !clientData) {
+      console.error('[Minutes] Failed to fetch client data:', fetchError);
+      return;
+    }
+    // Determine if user is on trial or paid plan
+    const isOnTrial = !clientData.paid_plan; // FALSE = trial user
+    const currentMinutesUsed = isOnTrial ? clientData.trial_minutes_used || 0 : clientData.paid_minutes_used || 0;
+    const newMinutesUsed = currentMinutesUsed + minutes;
+    if (isOnTrial) {
+      // Update trial minutes
+      const { error: updateError } = await supabaseClient.from('voice_ai_clients').update({
+        trial_minutes_used: newMinutesUsed,
+        updated_at: new Date().toISOString()
+      }).eq('client_id', clientId);
+      if (updateError) {
+        console.error('[Minutes] Failed to update trial_minutes_used:', updateError);
+      } else {
+        const remaining = (clientData.trial_minutes || 30) - newMinutesUsed;
+        console.log(`[Minutes] ✅ Trial usage updated: ${newMinutesUsed}/${clientData.trial_minutes || 30} minutes (${remaining} remaining)`);
+        // Warn if trial is almost exhausted
+        if (remaining <= 5 && remaining > 0) {
+          console.warn(`[Minutes] ⚠️ Trial almost exhausted for ${clientId}: ${remaining} minutes left`);
+        } else if (remaining <= 0) {
+          console.warn(`[Minutes] ⚠️ Trial EXHAUSTED for ${clientId}`);
+        }
+      }
+    } else {
+      // Update paid plan minutes
+      const { error: updateError } = await supabaseClient.from('voice_ai_clients').update({
+        paid_minutes_used: newMinutesUsed,
+        updated_at: new Date().toISOString()
+      }).eq('client_id', clientId);
+      if (updateError) {
+        console.error('[Minutes] Failed to update paid_minutes_used:', updateError);
+      } else {
+        const included = clientData.paid_minutes_included || 0;
+        const remaining = included - newMinutesUsed;
+        const overage = remaining < 0 ? Math.abs(remaining) : 0;
+        console.log(`[Minutes] ✅ Paid usage updated: ${newMinutesUsed}/${included} minutes (Paid plan active)`);
+        if (overage > 0) {
+          console.warn(`[Minutes] ⚠️ OVERAGE for ${clientId}: ${overage} minutes over plan limit`);
+        } else if (remaining <= 50) {
+          console.warn(`[Minutes] ⚠️ Plan almost exhausted for ${clientId}: ${remaining} minutes left`);
+        }
+        // CRITICAL: Send usage to DodoPayments for overage billing
+        // Only for paid customers with dodo_customer_id
+        if (clientData.paid_plan && clientData.dodo_customer_id) {
+          try {
+            console.log(`[DodoUsage] Sending ${minutes} minutes to DodoPayments for ${clientId}`);
+            const { error: ingestError } = await supabaseClient.functions.invoke('ingest-call-usage', {
+              body: {
+                client_id: clientId,
+                minutes_used: minutes
+              }
+            });
+            if (ingestError) {
+              console.error('[DodoUsage] Failed to send usage to DodoPayments:', ingestError);
+            } else {
+              console.log('[DodoUsage] ✅ Usage sent to DodoPayments successfully');
+            }
+          } catch (error) {
+            console.error('[DodoUsage] Error calling ingest-call-usage:', error);
+          }
+        } else {
+          console.log('[DodoUsage] Skipping - Trial user or no dodo_customer_id');
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[Minutes] Error tracking minute usage:', error);
+  }
+}
+// ============================================================================
+// CALENDAR BOOKING FUNCTIONS (Non-blocking - processed at end of call)
+// ============================================================================
+/**
+ * Process calendar booking intent from conversation (runs in background at end of call)
+ * Uses separate LLM call to extract booking details, then creates appointment
+ */ async function processCalendarBooking(session, sessionId, supabaseClient) {
+  const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
+  if (!GROQ_API_KEY) {
+    console.log('[Booking] Groq API key not found, skipping booking check');
+    return;
+  }
+  try {
+    // Build conversation transcript for analysis
+    const transcript = session.conversationHistory.map((msg)=>`${msg.role === 'user' ? 'Customer' : 'AI'}: ${msg.content}`).join('\n');
+    // Validate transcript is not empty
+    if (!transcript || transcript.trim().length === 0) {
+      console.log('[Booking] Empty transcript, skipping');
+      return;
+    }
+    // Truncate if too long
+    const maxLength = 8000;
+    const truncatedTranscript = transcript.length > maxLength ? transcript.substring(0, maxLength) + '...[truncated]' : transcript;
+    console.log('[Booking] Analyzing conversation for booking intent...');
+    // Use LLM to check if conversation contains booking request
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'openai/gpt-oss-20b',
+        messages: [
+          {
+            role: 'system',
+            content: `You are a booking extraction assistant. Analyze the conversation and determine if the customer wants to book an appointment.
+
+If YES, extract the booking details and return a JSON object:
+{
+  "has_booking": true,
+  "customer_name": "name if mentioned",
+  "customer_email": "email if mentioned",
+  "customer_phone": "phone if mentioned",
+  "date": "YYYY-MM-DD format if date mentioned",
+  "start_time": "HH:MM format (24-hour) if time mentioned",
+  "end_time": "HH:MM format (24-hour), estimate 1 hour duration if not specified",
+  "service": "type of service/appointment requested",
+  "notes": "any additional notes or requirements mentioned"
+}
+
+If NO booking intent, return: {"has_booking": false}
+
+Examples:
+- "I'd like to book a haircut for tomorrow at 3pm" → has_booking: true
+- "What are your hours?" → has_booking: false
+- "Can I schedule a consultation?" → has_booking: true (even without date/time - we'll follow up)`
+          },
+          {
+            role: 'user',
+            content: `Analyze this conversation for booking intent:\n\n${truncatedTranscript}`
+          }
+        ],
+        temperature: 0.1,
+        max_tokens: 300
+      }),
+      signal: AbortSignal.timeout(30000)
+    });
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error('[Booking] Groq API error:', response.status, errorBody);
+      return;
+    }
+    const data = await response.json();
+    const content = data.choices[0]?.message?.content?.trim();
+    if (!content) {
+      console.log('[Booking] No content returned from LLM');
+      return;
+    }
+    // Parse JSON response
+    let bookingData;
+    try {
+      bookingData = JSON.parse(content);
+    } catch (e) {
+      console.error('[Booking] Failed to parse LLM response:', content);
+      return;
+    }
+    // Check if there's a booking intent
+    if (!bookingData.has_booking) {
+      console.log('[Booking] No booking intent detected in conversation');
+      return;
+    }
+    console.log('[Booking] ✅ Booking intent detected:', bookingData);
+    // Validate we have minimum required info (at least customer name or contact info)
+    if (!bookingData.customer_name && !bookingData.customer_email && !bookingData.customer_phone) {
+      console.log('[Booking] ⚠️ Booking intent detected but no customer contact info - saving as pending lead');
+      // This will be captured by extractAndSaveLead function
+      return;
+    }
+    // Create the appointment via calendar-integration function
+    const bookingPayload = {
+      action: 'create_booking',
+      client_id: session.client.client_id,
+      customer_name: bookingData.customer_name || 'Unknown',
+      customer_phone: bookingData.customer_phone || null,
+      customer_email: bookingData.customer_email || null,
+      start_time: bookingData.date && bookingData.start_time ? `${bookingData.date}T${bookingData.start_time}:00` : null,
+      end_time: bookingData.date && bookingData.end_time ? `${bookingData.date}T${bookingData.end_time}:00` : null,
+      service_type: bookingData.service || 'General appointment',
+      notes: bookingData.notes || '',
+      session_id: sessionId,
+      source: 'website_chat',
+      status: bookingData.date && bookingData.start_time ? 'confirmed' : 'pending'
+    };
+    console.log('[Booking] Creating appointment:', bookingPayload);
+    const { data: result, error: bookingError } = await supabaseClient.functions.invoke('calendar-integration', {
+      body: bookingPayload
+    });
+    if (bookingError) {
+      console.error('[Booking] ❌ Failed to create appointment:', bookingError);
+    } else {
+      console.log('[Booking] ✅ Appointment created successfully:', result);
+    }
+  } catch (error) {
+    console.error('[Booking] Error during booking processing:', error);
+  }
+}
+// ============================================================================
+// FLEXPRICE INTEGRATION FUNCTIONS
+// ============================================================================
+/**
+ * Check user access combining trial + subscription logic
+ * Returns: { allowed: boolean, reason: string }
+ */ async function checkUserAccess(client) {
+  try {
+    // 1. Check if user has active PAID subscription (FlexPrice - for future)
+    if (FLEXPRICE_API_KEY) {
+      const subscription = await getFlexPriceSubscription(client.user_id);
+      if (subscription?.status === 'active') {
+        console.log(`[Access] User has active subscription: ${subscription.plan_id || 'unknown plan'}`);
+        return {
+          allowed: true,
+          reason: 'active_subscription'
+        };
+      }
+    }
+    // 2. No paid subscription → check TRIAL status
+    console.log('[Access] No active subscription - checking trial status...');
+    // 2a. CHECK MINUTE-BASED LIMITS (NEW - Nov 1, 2025)
+    const hasMinuteTracking = client.trial_minutes !== undefined && client.trial_minutes !== null;
+    if (hasMinuteTracking) {
+      if (!client.paid_plan) {
+        // Trial user - check minute limit
+        const minutesUsed = client.trial_minutes_used || 0;
+        const minutesTotal = client.trial_minutes || 30;
+        if (minutesUsed >= minutesTotal) {
+          console.log(`[Access] ❌ Trial minutes exhausted: ${minutesUsed}/${minutesTotal}`);
+          return {
+            allowed: false,
+            reason: 'trial_minutes_exhausted'
+          };
+        }
+        console.log(`[Access] ✅ Trial minutes available: ${minutesTotal - minutesUsed}/${minutesTotal} remaining`);
+        return {
+          allowed: true,
+          reason: 'trial_minutes_active'
+        };
+      } else {
+        // Paid user - always allow (overage tracked separately)
+        const minutesUsed = client.paid_minutes_used || 0;
+        const minutesIncluded = client.paid_minutes_included || 0;
+        const overage = Math.max(0, minutesUsed - minutesIncluded);
+        console.log(`[Access] ✅ Paid plan active: ${minutesUsed}/${minutesIncluded} minutes used${overage > 0 ? ` (${overage} overage)` : ''}`);
+        return {
+          allowed: true,
+          reason: 'paid_plan_active'
+        };
+      }
+    }
+    // 2b. Fallback: OLD event-based credits system (backwards compatibility)
+    const credits = client.credits || 0;
+    if (credits < 1) {
+      console.log(`[Access] Trial credits exhausted (${credits} remaining)`);
+      return {
+        allowed: false,
+        reason: 'trial_expired_credits'
+      };
+    }
+    // 2b. Check trial time limit (3 days from CLIENT creation)
+    const accountAge = Date.now() - new Date(client.created_at).getTime();
+    const daysSinceSignup = accountAge / (1000 * 60 * 60 * 24);
+    if (daysSinceSignup > 3) {
+      console.log(`[Access] Trial time expired (${Math.floor(daysSinceSignup)} days since client creation)`);
+      return {
+        allowed: false,
+        reason: 'trial_expired_time'
+      };
+    }
+    // 3. Trial is still valid
+    const creditsUsed = 10 - credits;
+    console.log(`[Access] Trial active: ${creditsUsed}/10 credits used, ${Math.floor(3 - daysSinceSignup)} days remaining`);
+    return {
+      allowed: true,
+      reason: 'trial_active'
+    };
+  } catch (error) {
+    console.error('[Access] Access check error:', error);
+    // Fail open on errors
+    return {
+      allowed: true,
+      reason: 'error_fail_open'
+    };
+  }
+}
+/**
+ * Get user's active subscription from FlexPrice
+ * Returns subscription object or null
+ */ async function getFlexPriceSubscription(userId) {
+  if (!FLEXPRICE_API_KEY) {
+    return null;
+  }
+  try {
+    const response = await fetch(`${FLEXPRICE_BASE_URL}/subscriptions?external_customer_id=${userId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': FLEXPRICE_API_KEY
+      }
+    });
+    if (!response.ok) {
+      console.error('[FlexPrice] Subscription check failed:', response.status);
+      return null;
+    }
+    const data = await response.json();
+    // Find active subscription
+    if (data?.data && Array.isArray(data.data)) {
+      const activeSub = data.data.find((sub)=>sub.status === 'active');
+      return activeSub || null;
+    }
+    return null;
+  } catch (error) {
+    console.error('[FlexPrice] Subscription check error:', error);
+    return null;
+  }
+}
+/**
+ * Check user's credit balance in FlexPrice
+ */ async function checkFlexPriceBalance(userId) {
+  if (!FLEXPRICE_API_KEY) {
+    console.warn('[FlexPrice] API key not configured - skipping balance check');
+    return 999; // Fail open
+  }
+  try {
+    console.log(`[FlexPrice] Checking balance for user ${userId}...`);
+    const response = await fetch(`${FLEXPRICE_BASE_URL}/wallets?external_customer_id=${userId}`, {
+      method: 'GET',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': FLEXPRICE_API_KEY
+      }
+    });
+    if (!response.ok) {
+      console.error('[FlexPrice] Balance check failed:', response.status, await response.text());
+      return 999; // Fail open
+    }
+    const data = await response.json();
+    const balance = data?.balance || 0;
+    console.log(`[FlexPrice] User ${userId} balance: ${balance} credits`);
+    return balance;
+  } catch (error) {
+    console.error('[FlexPrice] Balance check error:', error);
+    return 999; // Fail open
+  }
+}
+/**
+ * Track web_chat event in FlexPrice after chat ends
+ */ async function trackFlexPriceEvent(userId, chatId, durationSeconds) {
+  if (!FLEXPRICE_API_KEY) {
+    console.warn('[FlexPrice] API key not configured - skipping event tracking');
+    return false;
+  }
+  try {
+    console.log(`[FlexPrice] Tracking web_chat event for user ${userId}...`);
+    const response = await fetch(`${FLEXPRICE_BASE_URL}/events`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': FLEXPRICE_API_KEY
+      },
+      body: JSON.stringify({
+        event_name: 'web_chat',
+        external_customer_id: userId,
+        properties: {
+          chat_id: chatId,
+          duration_seconds: durationSeconds,
+          channel: 'website'
+        },
+        timestamp: new Date().toISOString(),
+        source: 'chat_websocket'
+      })
+    });
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('[FlexPrice] Event tracking failed:', response.status, errorText);
+      return false;
+    }
+    const data = await response.json();
+    console.log('[FlexPrice] ✅ web_chat event tracked:', data);
+    return true;
+  } catch (error) {
+    console.error('[FlexPrice] Event tracking error:', error);
+    return false;
+  }
+}

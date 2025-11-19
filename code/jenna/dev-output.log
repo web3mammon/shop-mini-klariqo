@@ -1,0 +1,7 @@
+› Press a │ Open on Android device or emulator
+› Press i │ Open in iOS simulator
+› Press q │ Open on iOS device using a QR code
+› Press d │ Deeplink to a specific path
+
+Press Ctrl+C to exit.
+Non-interactive terminal, keyboard commands are disabled. Please upgrade to Node 12+
