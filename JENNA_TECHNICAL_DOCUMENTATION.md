@@ -6,6 +6,7 @@
 
 **What We Achieved:**
 - ✅ Real-time voice conversation (WebSocket-based)
+- ✅ **Interrupt detection** - User can stop AI mid-speech by talking
 - ✅ Natural product search with voice-controlled filters
 - ✅ Voice-controlled result count ("show me 10 options")
 - ✅ **Smart pagination ("show me more")** - Fetches 50, shows 5 at a time, pages through results
@@ -1329,6 +1330,59 @@ setStartIndex(startIndex + displayCount); // 0→5, 5→10, 10→15
 
 ---
 
+### 6.1. **🌟 Why Interrupt Detection?**
+**Decision:** Allow users to interrupt AI mid-speech by simply talking.
+
+**The Problem:**
+- Users had to wait for AI to finish entire response before speaking again
+- Frustrating UX - like talking to someone who won't let you interrupt
+- Not natural conversation flow
+
+**The Solution - Production-Quality Interrupts:**
+```typescript
+// Frontend (useWebSocket.ts): Detect partial transcript + check audio
+case 'transcript.user':
+  if (!data.isFinal && !hasInterruptedRef.current) {
+    if (audioPlayerControls?.getIsPlaying()) {
+      console.log('[WebSocket] User started speaking - interrupting AI');
+      audioPlayerControls.stop(); // Stop audio instantly
+      ws.send(JSON.stringify({ type: 'interrupt' })); // Tell backend
+      hasInterruptedRef.current = true;
+    }
+  }
+
+// Backend (voice-websocket): Cancel TTS generation
+case 'interrupt':
+  session.isProcessing = false; // Stop generating more TTS
+  socket.send(JSON.stringify({ type: 'interrupt.acknowledged' }));
+```
+
+**How It Works:**
+1. AI is speaking (audio playing)
+2. User starts talking → AssemblyAI sends **partial** transcript (not final)
+3. Frontend checks: Is audio playing? → YES
+4. Frontend: Stop audio + send interrupt signal to backend
+5. Backend: Cancel any pending TTS generation
+6. User's new input processed immediately
+
+**Key Implementation Details:**
+- **AudioPlayer controls:** `stop()` and `getIsPlaying()` methods
+- **Partial transcripts:** Detect interruption as soon as user speaks
+- **hasInterrupted flag:** Only interrupt once per AI turn
+- **Reset on new AI response:** Ready for next interrupt
+
+**Why This Pattern:**
+- Copied EXACTLY from production (chat-websocket-production + klariqo-widget.js)
+- Natural conversation - just like talking to a real person
+- No awkward pauses waiting for AI to finish
+
+**Alternatives Considered:**
+- ❌ Wait for final transcript - too slow, AI keeps talking
+- ❌ Cancel on any audio input - too sensitive, false triggers
+- ✅ Partial transcript + audio playing check - PERFECT balance
+
+---
+
 ### 7. **Why Auto-Reconnect (Up to 5 Attempts)?**
 **Decision:** Implement reconnection logic in frontend.
 
@@ -1489,6 +1543,7 @@ Already implemented in App.tsx - recording starts ONLY when user taps mic button
 - ✅ Speech-to-text (AssemblyAI, 24kHz PCM)
 - ✅ Natural language AI (Groq, streaming)
 - ✅ Text-to-speech (ElevenLabs, Sarah voice)
+- ✅ **Interrupt detection (stop AI mid-speech by talking)**
 - ✅ Product search (intent extraction)
 - ✅ Product display (Shop Mini SDK, ProductCard)
 - ✅ Voice-controlled count ("show me 10")
@@ -1504,6 +1559,7 @@ Already implemented in App.tsx - recording starts ONLY when user taps mic button
 - ✅ "Show me 10 options" → shows 10 products
 - ✅ "Show me more above $200" → detects filter change, new search
 - ✅ "Black mini dresses" → clears previous, shows new
+- ✅ **Interrupt AI mid-speech** → AI stops instantly, listens to user
 - ✅ WebSocket drops → auto-reconnects seamlessly
 
 ### Integration Points
