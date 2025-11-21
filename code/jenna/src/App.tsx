@@ -1,9 +1,14 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Button, MinisRouter, useProductSearch, ProductCard } from '@shopify/shop-minis-react';
 import { Mic } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { AudioPlayer } from './components/AudioPlayer';
+
+interface AudioPlayerControls {
+  stop: () => void;
+  getIsPlaying: () => boolean;
+}
 
 /**
  * Jenna Voice Shopping App
@@ -19,6 +24,9 @@ export function App() {
   const [startIndex, setStartIndex] = useState(0); // Where to start showing products
   const [displayCount, setDisplayCount] = useState(5); // How many to show
 
+  // AudioPlayer controls for interrupt detection
+  const audioPlayerControlsRef = useRef<AudioPlayerControls | null>(null);
+
   // WebSocket connection
   const {
     isConnected,
@@ -32,6 +40,7 @@ export function App() {
     sendAudioChunk,
     setAudioChunkHandler,
     resetFetchMore,
+    setAudioPlayerControls, // NEW: Pass audio controls for interrupt detection
   } = useWebSocket();
 
   // Product search - ALWAYS fetch 50 products (not 5!)
@@ -78,6 +87,13 @@ export function App() {
   const { isRecording, startRecording, stopRecording } = useAudioRecorder(
     (chunk) => sendAudioChunk(chunk)
   );
+
+  // Pass audio controls to WebSocket for interrupt detection
+  useEffect(() => {
+    if (audioPlayerControlsRef.current) {
+      setAudioPlayerControls(audioPlayerControlsRef.current);
+    }
+  }, [setAudioPlayerControls]);
 
   // Sync recording with listening state
   useEffect(() => {
@@ -192,7 +208,13 @@ export function App() {
         </div>
 
         {/* Audio Player - hidden */}
-        <AudioPlayer onAudioChunkHandler={setAudioChunkHandler} />
+        <AudioPlayer
+          onAudioChunkHandler={setAudioChunkHandler}
+          onPlayerReady={(controls) => {
+            audioPlayerControlsRef.current = controls;
+            setAudioPlayerControls(controls);
+          }}
+        />
       </div>
     </MinisRouter>
   );

@@ -13,6 +13,11 @@ interface ProductSearchIntent {
   timestamp?: number;
 }
 
+interface AudioPlayerControls {
+  stop: () => void;
+  getIsPlaying: () => boolean;
+}
+
 interface UseWebSocketReturn {
   isConnected: boolean;
   conversationState: 'idle' | 'connecting' | 'listening';
@@ -25,6 +30,7 @@ interface UseWebSocketReturn {
   sendAudioChunk: (audioBase64: string) => void;
   setAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
   resetFetchMore: () => void; // NEW: reset flag after fetchMore() called
+  setAudioPlayerControls: (controls: AudioPlayerControls) => void; // NEW: for interrupt detection
 }
 
 const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/voice-websocket';
@@ -49,6 +55,10 @@ export function useWebSocket(): UseWebSocketReturn {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isIntentionalDisconnectRef = useRef(false);
   const MAX_RECONNECT_ATTEMPTS = 5;
+
+  // Interrupt detection refs (EXACT from production klariqo-widget.js)
+  const audioPlayerControlsRef = useRef<AudioPlayerControls | null>(null);
+  const hasInterruptedRef = useRef(false); // Track if we've interrupted for current turn
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -87,6 +97,22 @@ export function useWebSocket(): UseWebSocketReturn {
             break;
 
           case 'transcript.user':
+            // Interrupt detection (EXACT from production klariqo-widget.js lines 1007-1015)
+            if (!data.isFinal && !hasInterruptedRef.current) {
+              // Check if audio is actually playing before interrupting
+              if (audioPlayerControlsRef.current?.getIsPlaying()) {
+                console.log('[WebSocket] 🛑 User started speaking - interrupting AI');
+                audioPlayerControlsRef.current.stop();
+
+                // Send interrupt signal to backend
+                if (wsRef.current?.readyState === WebSocket.OPEN) {
+                  wsRef.current.send(JSON.stringify({ type: 'interrupt' }));
+                }
+
+                hasInterruptedRef.current = true; // Mark that we've interrupted for this turn
+              }
+            }
+
             // Only add user message when final (EXACT from klariqo-widget.js line 988-991)
             if (data.isFinal) {
               console.log('[WebSocket] User said:', data.text);
@@ -98,6 +124,8 @@ export function useWebSocket(): UseWebSocketReturn {
             // Add AI message (EXACT from klariqo-widget.js line 994-996)
             console.log('[WebSocket] AI said:', data.text);
             setMessages(prev => [...prev, { text: data.text, isUser: false }]);
+            // Reset interrupt flag when AI starts speaking (ready for next interrupt)
+            hasInterruptedRef.current = false;
             break;
 
           case 'audio.chunk':
@@ -234,6 +262,11 @@ export function useWebSocket(): UseWebSocketReturn {
     setShouldFetchMore(false);
   }, []);
 
+  const setAudioPlayerControls = useCallback((controls: AudioPlayerControls) => {
+    console.log('[WebSocket] 🎵 Audio player controls registered for interrupt detection');
+    audioPlayerControlsRef.current = controls;
+  }, []);
+
   return {
     isConnected,
     conversationState,
@@ -246,5 +279,6 @@ export function useWebSocket(): UseWebSocketReturn {
     sendAudioChunk,
     setAudioChunkHandler,
     resetFetchMore,
+    setAudioPlayerControls,
   };
 }

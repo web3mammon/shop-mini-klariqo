@@ -138,9 +138,16 @@ Deno.serve(async (req) => {
           break;
 
         case 'interrupt':
-          console.log('[WebSocket] User interrupted');
-          // Just reset processing flag
+          // Handle user interrupt (EXACT from production chat-websocket-production)
+          console.log('[Interrupt] 🛑 User interrupted AI response');
+          // Reset processing flag to cancel any pending TTS generation
           session.isProcessing = false;
+          // Notify frontend that interrupt was processed
+          socket.send(JSON.stringify({
+            type: 'interrupt.acknowledged',
+            message: 'Interrupt processed'
+          }));
+          console.log('[Interrupt] AI interrupted, ready for new input');
           break;
 
         default:
@@ -380,7 +387,7 @@ Remember: You're helpful, enthusiastic, and concise. Keep responses SHORT! Let t
       body: JSON.stringify({
         model: 'openai/gpt-oss-20b',
         messages,
-        max_tokens: 150,
+        // No max_tokens - let Groq respond naturally without cutoffs
         temperature: 0.7,
         stream: true
       }),

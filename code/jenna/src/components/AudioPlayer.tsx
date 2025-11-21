@@ -1,19 +1,28 @@
 import { useEffect, useRef } from 'react';
 
+interface AudioPlayerControls {
+  stop: () => void;
+  getIsPlaying: () => boolean;
+}
+
 interface AudioPlayerProps {
   onAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
+  onPlayerReady?: (controls: AudioPlayerControls) => void;
 }
 
 /**
  * AudioPlayer component - EXACT pattern from klariqo-widget.js AudioPlayer class (lines 617-721)
  * Uses Web Audio API for iOS-compatible sequential playback
+ * + Interrupt detection (stop() and getIsPlaying() methods)
  */
-export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
+export function AudioPlayer({ onAudioChunkHandler, onPlayerReady }: AudioPlayerProps) {
   const audioContextRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
   const chunkBufferRef = useRef<{ [key: number]: AudioBuffer }>({});
   const nextChunkToPlayRef = useRef(0);
   const nextStartTimeRef = useRef(0);
+  const activeSourcesRef = useRef<AudioBufferSourceNode[]>([]); // Track active sources for stopping
+  const isPlayingRef = useRef(false); // Track if audio is currently playing
 
   useEffect(() => {
     // Define the audio chunk handler (called by useWebSocket when audio.chunk arrives)
@@ -67,6 +76,22 @@ export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
           const now = audioContextRef.current.currentTime;
           const startTime = Math.max(now, nextStartTimeRef.current);
 
+          // Track active source for interrupt detection
+          activeSourcesRef.current.push(source);
+          isPlayingRef.current = true;
+
+          // Remove from active list when finished
+          source.onended = () => {
+            const index = activeSourcesRef.current.indexOf(source);
+            if (index > -1) {
+              activeSourcesRef.current.splice(index, 1);
+            }
+            // If no more sources playing, set isPlaying to false
+            if (activeSourcesRef.current.length === 0) {
+              isPlayingRef.current = false;
+            }
+          };
+
           source.start(startTime);
           console.log(`[AudioPlayer] Playing chunk ${nextChunkToPlayRef.current} at ${startTime}s (now: ${now}s)`);
 
@@ -79,6 +104,37 @@ export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
         console.error('[AudioPlayer] Failed to decode/play audio:', error);
       }
     };
+
+    // Control methods for interrupt detection (EXACT from production klariqo-widget.js)
+    const stop = () => {
+      console.log('[AudioPlayer] Stopping all audio (interrupt)');
+      // Stop all active sources
+      activeSourcesRef.current.forEach(source => {
+        try {
+          source.stop();
+        } catch (e) {
+          // Source might already be stopped
+        }
+      });
+      activeSourcesRef.current = [];
+      isPlayingRef.current = false;
+
+      // Clear buffered chunks
+      chunkBufferRef.current = {};
+      nextChunkToPlayRef.current = 0;
+      if (audioContextRef.current) {
+        nextStartTimeRef.current = audioContextRef.current.currentTime;
+      }
+    };
+
+    const getIsPlaying = () => {
+      return isPlayingRef.current;
+    };
+
+    // Expose controls to parent
+    if (onPlayerReady) {
+      onPlayerReady({ stop, getIsPlaying });
+    }
 
     // Register handler with useWebSocket
     onAudioChunkHandler(handleAudioChunk);
