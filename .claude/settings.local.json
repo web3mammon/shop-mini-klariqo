@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:shop.app)",
+      "WebFetch(domain:community.shopify.dev)",
+      "WebFetch(domain:shopify.dev)",
+      "Bash(npx shop-minis:*)",
+      "Bash(SUPABASE_ACCESS_TOKEN=\"sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847\" npx supabase:*)",
+      "Bash(SUPABASE_ACCESS_TOKEN=\"sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847\" npx supabase functions deploy:*)",
+      "Bash(SUPABASE_ACCESS_TOKEN=\"sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847\" npx supabase link:*)",
+      "Bash(git add:*)",
+      "Bash(git reset:*)",
+      "Bash(cat:*)",
+      "Bash(npx supabase functions deploy:*)",
+      "Bash(npm run build:*)",
+      "Bash(git commit:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

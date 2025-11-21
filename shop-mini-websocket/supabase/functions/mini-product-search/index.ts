@@ -24,6 +24,7 @@ interface ProductSearchResponse {
   query?: string;
   filters?: ProductSearchFilters;
   count?: number;
+  isPagination?: boolean; // NEW: true if "show more", false if new search
 }
 
 /**
@@ -68,13 +69,15 @@ serve(async (req: Request) => {
     }
 
     console.log('[ProductSearch] Search intent extracted:', searchIntent);
+    console.log('[ProductSearch] 🔄 isPagination:', searchIntent.isPagination);
 
     return new Response(
       JSON.stringify({
         hasSearchIntent: true,
         query: searchIntent.query,
         filters: searchIntent.filters,
-        count: searchIntent.count || null
+        count: searchIntent.count || null,
+        isPagination: searchIntent.isPagination || false
       }),
       {
         status: 200,
@@ -103,7 +106,7 @@ async function extractProductSearch(
   userInput: string,
   aiResponse: string,
   conversationHistory: Array<{ role: string; content: string }>
-): Promise<{ query: string; filters: ProductSearchFilters; count?: number } | null> {
+): Promise<{ query: string; filters: ProductSearchFilters; count?: number; isPagination?: boolean } | null> {
   const GROQ_API_KEY = Deno.env.get('GROQ_API_KEY');
 
   // Build full conversation context
@@ -137,6 +140,18 @@ Look at ALL messages to understand what the user is looking for.
 
 IMPORTANT: Build on previous context! If user said "red sneakers" then "under $100", the search should be "red sneakers" with maxPrice filter.
 
+PAGINATION DETECTION (CRITICAL LOGIC):
+- isPagination: false (NEW SEARCH) if:
+  - User specifies NEW or DIFFERENT filters (price, color, category, gender)
+  - Example: Previous was "red sneakers", now "show me more above $200" → NEW price filter = NEW SEARCH
+  - Example: Previous was "sneakers under $100", now "show me more above $200" → DIFFERENT price = NEW SEARCH
+  - Example: "show me blue jeans" when previously was "red sneakers" → NEW item = NEW SEARCH
+
+- isPagination: true (SHOW MORE) if:
+  - User wants more with NO filter changes
+  - Example: "show me more", "give me more options", "I want to see more", "more please"
+  - Filters are exactly the same as previous request
+
 Also extract HOW MANY products the user wants to see:
 - "show me 10 options" → count: 10
 - "give me 5 more" → count: 5
@@ -152,7 +167,8 @@ Return JSON:
   "maxPrice": number or null,
   "colors": ["red", "blue"] or null,
   "gender": "men|women|unisex|null",
-  "count": number or null
+  "count": number or null,
+  "isPagination": true/false (true = load more of same search, false = new search)
 }
 
 If no search intent, return {"hasSearchIntent": false}`,
@@ -196,6 +212,7 @@ If no search intent, return {"hasSearchIntent": false}`,
           gender: intent.gender,
         },
         count: intent.count || null,
+        isPagination: intent.isPagination || false,
       };
     }
   } catch (e) {

@@ -14,9 +14,10 @@ import { AudioPlayer } from './components/AudioPlayer';
  * - Product search is completely isolated via separate edge function
  */
 export function App() {
-  // Separate state for search query and count
+  // Search query state
   const [searchQuery, setSearchQuery] = useState('');
-  const [productCount, setProductCount] = useState(5);
+  const [startIndex, setStartIndex] = useState(0); // Where to start showing products
+  const [displayCount, setDisplayCount] = useState(5); // How many to show
 
   // WebSocket connection
   const {
@@ -24,31 +25,54 @@ export function App() {
     conversationState,
     messages,
     productSearch,
+    shouldFetchMore, // Pagination trigger
     error,
     connect,
     disconnect,
     sendAudioChunk,
     setAudioChunkHandler,
+    resetFetchMore,
   } = useWebSocket();
 
-  // Product search using Shop Mini SDK with dynamic count
+  // Product search - ALWAYS fetch 50 products (not 5!)
   const { products, loading: productsLoading } = useProductSearch({
     query: searchQuery,
     filters: {},
-    first: productCount, // Use count from backend (default 5)
+    first: 50, // ✨ Always fetch 50, display only what user wants
   });
 
-  // Sync productSearch from backend to searchQuery state
-  // Append timestamp to make query unique for "show more" requests
+  // Handle NEW SEARCH (new query or filter change)
   useEffect(() => {
     if (productSearch?.query) {
-      console.log('[App] New search requested:', productSearch.query, 'Count:', productSearch.count, 'Timestamp:', productSearch.timestamp);
-      // Append timestamp to query to force SDK to refetch
+      console.log('[App] 🔍 NEW SEARCH requested:', productSearch.query, 'Initial display count:', productSearch.count);
+      // Append timestamp to make query unique
       const uniqueQuery = `${productSearch.query} ${productSearch.timestamp || Date.now()}`;
       setSearchQuery(uniqueQuery);
-      setProductCount(productSearch.count || 5);
+      setStartIndex(0); // ✨ Reset to start from beginning
+      setDisplayCount(productSearch.count || 5);
+      console.log('[App] ✅ Will fetch 50 products, show products 1-' + (productSearch.count || 5));
     }
   }, [productSearch]);
+
+  // Handle PAGINATION (show NEXT page, not append!)
+  useEffect(() => {
+    if (shouldFetchMore) {
+      const newCount = productSearch?.count || 5;
+      const newStartIndex = startIndex + displayCount; // Move forward by current displayCount
+
+      console.log('[App] 🔄 PAGINATION requested - showing NEXT page (replacing current)');
+      console.log('[App] Previous range: products', startIndex + 1, 'to', startIndex + displayCount);
+      console.log('[App] New start index:', newStartIndex);
+      console.log('[App] New display count:', newCount);
+      console.log('[App] New range: products', newStartIndex + 1, 'to', newStartIndex + newCount);
+
+      setStartIndex(newStartIndex); // ✨ Move to next page
+      setDisplayCount(newCount); // Update count (user might say "show me 10 more")
+      resetFetchMore();
+
+      console.log('[App] ✅ Now showing products', newStartIndex + 1, 'to', newStartIndex + newCount);
+    }
+  }, [shouldFetchMore, startIndex, displayCount, productSearch, resetFetchMore]);
 
   // Audio recorder
   const { isRecording, startRecording, stopRecording } = useAudioRecorder(
@@ -108,7 +132,8 @@ export function App() {
             {products && products.length > 0 && (
               <div className="flex justify-start">
                 <div className="max-w-[90%] space-y-3">
-                  {products.map((product) => (
+                  {/* ✨ Show current page only (startIndex to startIndex + displayCount) */}
+                  {products.slice(startIndex, startIndex + displayCount).map((product) => (
                     <ProductCard key={product.id} product={product} />
                   ))}
                 </div>

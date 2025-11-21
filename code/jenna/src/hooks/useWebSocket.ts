@@ -18,11 +18,13 @@ interface UseWebSocketReturn {
   conversationState: 'idle' | 'connecting' | 'listening';
   messages: Array<{ text: string; isUser: boolean }>;
   productSearch: ProductSearchIntent | null;
+  shouldFetchMore: boolean; // NEW: triggers fetchMore() in App.tsx
   error: string | null;
   connect: () => void;
   disconnect: () => void;
   sendAudioChunk: (audioBase64: string) => void;
   setAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
+  resetFetchMore: () => void; // NEW: reset flag after fetchMore() called
 }
 
 const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/voice-websocket';
@@ -38,6 +40,7 @@ export function useWebSocket(): UseWebSocketReturn {
   const [conversationState, setConversationState] = useState<'idle' | 'connecting' | 'listening'>('idle');
   const [messages, setMessages] = useState<Array<{ text: string; isUser: boolean }>>([]);
   const [productSearch, setProductSearch] = useState<ProductSearchIntent | null>(null);
+  const [shouldFetchMore, setShouldFetchMore] = useState(false); // NEW: pagination trigger
   const [error, setError] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
@@ -109,8 +112,8 @@ export function useWebSocket(): UseWebSocketReturn {
             break;
 
           case 'products.search':
-            // Product search intent received from backend
-            console.log('[WebSocket] ✅ RECEIVED products.search from backend:', data);
+            // New product search intent received from backend
+            console.log('[WebSocket] ✅ RECEIVED products.search (NEW SEARCH) from backend:', data);
             console.log('[WebSocket] Query:', data.query, 'Count:', data.count, 'Timestamp:', data.timestamp);
             setProductSearch({
               query: data.query,
@@ -118,7 +121,23 @@ export function useWebSocket(): UseWebSocketReturn {
               count: data.count || 5,
               timestamp: data.timestamp
             });
-            console.log('[WebSocket] ✅ productSearch state updated');
+            setShouldFetchMore(false); // Reset pagination flag for new search
+            console.log('[WebSocket] ✅ productSearch state updated (NEW SEARCH)');
+            break;
+
+          case 'products.fetchMore':
+            // Pagination request received from backend
+            console.log('[WebSocket] 🔄 RECEIVED products.fetchMore (PAGINATION) from backend:', data);
+            console.log('[WebSocket] Query:', data.query, 'Count:', data.count, 'Timestamp:', data.timestamp);
+            // Update productSearch with pagination data (includes new count!)
+            setProductSearch({
+              query: data.query,
+              filters: data.filters || {},
+              count: data.count || 5,
+              timestamp: data.timestamp
+            });
+            setShouldFetchMore(true); // Trigger pagination in App.tsx
+            console.log('[WebSocket] ✅ productSearch updated with count:', data.count);
             break;
 
           case 'error':
@@ -210,15 +229,22 @@ export function useWebSocket(): UseWebSocketReturn {
     audioChunkHandlerRef.current = handler;
   }, []);
 
+  const resetFetchMore = useCallback(() => {
+    console.log('[WebSocket] 🔄 resetFetchMore() called - setting shouldFetchMore to FALSE');
+    setShouldFetchMore(false);
+  }, []);
+
   return {
     isConnected,
     conversationState,
     messages,
     productSearch,
+    shouldFetchMore,
     error,
     connect,
     disconnect,
     sendAudioChunk,
     setAudioChunkHandler,
+    resetFetchMore,
   };
 }

@@ -328,7 +328,9 @@ CRITICAL RULE - NEVER DESCRIBE SPECIFIC PRODUCTS:
 PRODUCT COUNT FEATURE:
 - By default, you show 5 product options
 - Users can ask for more: "show me 10", "give me 20 options", "I want to see more"
-- Respond naturally: "Here are 10 options for you!" or "Showing you 20 choices!"
+- CRITICAL: ONLY mention a specific number if the user EXPLICITLY said that number
+  - If user says "show me 10" → You say "Here are ten options!"
+  - If user says "show me more" → You say "Here are more options!" (DON'T make up a number!)
 - Also mention they can adjust: "You can tell me how many you'd like to see!"
 
 CONVERSATION EXAMPLES:
@@ -339,7 +341,10 @@ User: "Show me 10 options"
 You: "Sure! Here are ten options for you!"
 
 User: "I want to see more"
-You: "You got it! Showing you more options. You can also tell me exactly how many you'd like!"
+You: "You got it! Here are more options. You can also tell me exactly how many you'd like!"
+
+User: "A few more please"
+You: "Sure! Here you go. Let me know if you want to see a specific number of options!"
 
 User: "Do you have that in size 10?"
 You: "Let me check size ten options for you!"
@@ -624,11 +629,13 @@ async function searchProducts(sessionId: string, userInput: string, aiResponse: 
 
     if (data.hasSearchIntent && data.query) {
       console.log('[ProductSearch] Search intent found:', data.query);
+      console.log('[ProductSearch] 🔄 isPagination:', data.isPagination);
 
       // Build query string with filters appended to make it unique
       let finalQuery = data.query;
       const filters = data.filters || {};
       const count = data.count || 5; // Default to 5 products
+      const isPagination = data.isPagination || false;
 
       // Append filters to query string so it's unique each time
       if (filters.minPrice) finalQuery += ` above $${filters.minPrice}`;
@@ -640,14 +647,17 @@ async function searchProducts(sessionId: string, userInput: string, aiResponse: 
       console.log('[ProductSearch] Final query with filters:', finalQuery);
       console.log('[ProductSearch] Count requested:', count);
 
-      // Send search intent to frontend
+      // Send different message type based on pagination
       if (socket.readyState === WebSocket.OPEN) {
+        const messageType = isPagination ? 'products.fetchMore' : 'products.search';
+        console.log(`[ProductSearch] 📤 Message type: ${messageType} (${isPagination ? 'PAGINATION' : 'NEW SEARCH'})`);
+
         const message = {
-          type: 'products.search',
+          type: messageType,
           query: finalQuery, // Send enhanced query with filters
           filters: filters,
           count: count,
-          timestamp: Date.now(), // Add timestamp to force refresh for "show me more"
+          timestamp: Date.now(), // Add timestamp to force refresh
         };
         console.log('[ProductSearch] Sending to frontend:', JSON.stringify(message));
         socket.send(JSON.stringify(message));

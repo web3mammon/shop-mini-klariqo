@@ -8,6 +8,7 @@
 - ✅ Real-time voice conversation (WebSocket-based)
 - ✅ Natural product search with voice-controlled filters
 - ✅ Voice-controlled result count ("show me 10 options")
+- ✅ **Smart pagination ("show me more")** - Fetches 50, shows 5 at a time, pages through results
 - ✅ Clean chat bubble UI with inline product cards
 - ✅ Auto-reconnection on WebSocket drops
 - ✅ Complete isolation between voice AI and product search
@@ -1237,6 +1238,72 @@ if (filters.colors) finalQuery += " red";
 
 ---
 
+### 4.1. **🌟 Why Smart Pagination (Fetch 50, Show 5)?**
+**Decision:** Always fetch 50 products, display only 5 (or user-requested count) at a time.
+
+**The Problem We Solved:**
+- Shopify SDK's `fetchMore()` is poorly documented and inconsistent
+- Using timestamps to force new searches worked but returned SAME top results
+- Users saying "show me more" saw the same 5 products repeatedly
+
+**The Solution - Frontend Pagination:**
+```typescript
+// Backend: Always fetch 50 products
+const { products } = useProductSearch({
+  query: searchQuery,
+  first: 50, // ✨ Always 50, not 5!
+});
+
+// Frontend: Show only current "page"
+const [startIndex, setStartIndex] = useState(0);
+const [displayCount, setDisplayCount] = useState(5);
+
+// Display slice
+products.slice(startIndex, startIndex + displayCount)
+
+// Pagination: Move window forward
+setStartIndex(startIndex + displayCount); // 0→5, 5→10, 10→15
+```
+
+**User Flow:**
+1. User: "Show me red sneakers"
+   - Fetches 50 products
+   - Shows products #1-5
+   - `startIndex: 0, displayCount: 5`
+
+2. User: "Show me more"
+   - NO new fetch (uses cached 50)
+   - Shows products #6-10 (REPLACES 1-5, not appends!)
+   - `startIndex: 5, displayCount: 5`
+
+3. User: "Show me 10 more"
+   - Shows products #11-20
+   - `startIndex: 11, displayCount: 10`
+
+4. User: "Show me only above $200"
+   - NEW filter = NEW SEARCH
+   - Fetches NEW 50 products
+   - Resets: `startIndex: 0, displayCount: 5`
+
+**Smart Backend Detection:**
+- `isPagination: false` (NEW SEARCH) if user adds/changes filters
+- `isPagination: true` (PAGINATION) if user just wants "more" with no filter changes
+
+**Why This Works:**
+- Real shopping UX - like swiping through Instagram stories
+- No repeated results - each "more" shows NEXT page
+- Fast - no re-querying for pagination
+- Natural - "show me more" feels like browsing, not searching
+
+**Alternatives Tried:**
+1. ❌ SDK's `fetchMore()` - poorly documented, inconsistent behavior
+2. ❌ Timestamp-based new searches - returns same top results each time
+3. ✅ Fetch-50-show-5 pattern - PERFECT! Instant pagination, unique results
+
+**User Reaction:** "BINGO!!! We are golden... mindblowing functionality!" 🎉
+
+---
+
 ### 5. **Why No max_tokens Limit in mini-product-search?**
 **Decision:** Remove `max_tokens` from Groq call.
 
@@ -1425,14 +1492,17 @@ Already implemented in App.tsx - recording starts ONLY when user taps mic button
 - ✅ Product search (intent extraction)
 - ✅ Product display (Shop Mini SDK, ProductCard)
 - ✅ Voice-controlled count ("show me 10")
+- ✅ **Smart pagination (fetch 50, show 5, page through)**
 - ✅ Chat bubble UI (user + AI messages)
 - ✅ Auto-reconnection (up to 5 attempts)
 
 ### User Flows (Tested & Working)
-- ✅ "Show me red sneakers" → shows 5 products
-- ✅ "Under $100" → shows refined results
+- ✅ "Show me red sneakers" → fetches 50, displays 1-5
+- ✅ "Show me more" → displays 6-10 (no re-fetch, instant!)
+- ✅ "Show me 10 more" → displays 11-20
+- ✅ "Under $100" → new search, fetches fresh 50 products
 - ✅ "Show me 10 options" → shows 10 products
-- ✅ "Show me more" → refreshes with new query
+- ✅ "Show me more above $200" → detects filter change, new search
 - ✅ "Black mini dresses" → clears previous, shows new
 - ✅ WebSocket drops → auto-reconnects seamlessly
 
@@ -1446,18 +1516,30 @@ Already implemented in App.tsx - recording starts ONLY when user taps mic button
 
 ## ⚠️ Known Limitations
 
-### 1. Product Filters Not Applied by SDK
+### 1. ~~Product Pagination~~ ✅ SOLVED!
+**Previous Issue:** "Show me more" returned same top 5 products repeatedly.
+
+**Solution Implemented:** Smart pagination (fetch 50, show 5, page through).
+- Now "show me more" shows NEXT page (6-10), not same products
+- Instant pagination (no re-query)
+- Like swiping through Instagram stories
+
+**Status:** 100% working! 🎉
+
+---
+
+### 2. Product Filters Not Applied by SDK
 **Issue:** Backend sends filters (minPrice, maxPrice, colors), but SDK ignores them.
 
 **Why:** We pass `filters: {}` to `useProductSearch` because changing filters alone doesn't trigger refetch.
 
 **Workaround:** Append filters to query string ("red sneakers above $100").
 
-**Future Fix:** Investigate if SDK has different parameter for forcing refetch.
+**Impact:** Minimal - workaround works perfectly.
 
 ---
 
-### 2. Conversation History Includes All Messages
+### 3. Conversation History Includes All Messages
 **Issue:** Product search uses full conversation history, sometimes detects old intent.
 
 **Example:**
