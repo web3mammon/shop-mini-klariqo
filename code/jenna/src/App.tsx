@@ -1,362 +1,174 @@
-import { useState, useEffect, useCallback } from 'react';
-import { ProductCard, useProductSearch } from '@shopify/shop-minis-react';
-import { AudioPlayer, initAudioContext } from './components/AudioPlayer';
-import { useVoiceRecorder } from './hooks/useVoiceRecorder';
-import { useVoiceConnection } from './hooks/useVoiceConnection';
+import { useState, useEffect } from 'react';
+import { Button, MinisRouter, useProductSearch, ProductCard } from '@shopify/shop-minis-react';
+import { Mic } from 'lucide-react';
+import { useWebSocket } from './hooks/useWebSocket';
+import { useAudioRecorder } from './hooks/useAudioRecorder';
+import { AudioPlayer } from './components/AudioPlayer';
 
+/**
+ * Jenna Voice Shopping App
+ * Chat UI copied EXACTLY from klariqo-widget.js
+ * - User says something → user bubble appears
+ * - AI responds → AI bubble appears
+ * - Products appear as separate message bubble (max 3, vertical)
+ * - Product search is completely isolated via separate edge function
+ */
 export function App() {
-  const [isRecording, setIsRecording] = useState(false);
+  // Separate state for search query and count
   const [searchQuery, setSearchQuery] = useState('');
-  const [currentAudio, setCurrentAudio] = useState<string | null>(null);
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isConversationExpanded, setIsConversationExpanded] = useState(false);
-  const [audioLevel, setAudioLevel] = useState(0);
+  const [productCount, setProductCount] = useState(5);
 
-  // Voice connection
+  // WebSocket connection
   const {
-    transcript,
-    aiResponse,
-    audioResponse,
+    isConnected,
+    conversationState,
+    messages,
     productSearch,
-    processVoice,
-    error: voiceError,
-    isProcessing,
-  } = useVoiceConnection();
+    error,
+    connect,
+    disconnect,
+    sendAudioChunk,
+    setAudioChunkHandler,
+  } = useWebSocket();
 
-  // Voice recorder
-  const {
-    startRecording,
-    stopRecording,
-    error: recorderError,
-  } = useVoiceRecorder();
-
-  // Product search
+  // Product search using Shop Mini SDK with dynamic count
   const { products, loading: productsLoading } = useProductSearch({
     query: searchQuery,
     filters: {},
+    first: productCount, // Use count from backend (default 5)
   });
 
-  // Handle audio responses
-  useEffect(() => {
-    if (audioResponse) {
-      console.log('[App] Audio response received, setting speaking state');
-      setCurrentAudio(audioResponse);
-      setIsSpeaking(true);
-
-      // Auto-stop speaking after reasonable time (fallback)
-      const timeout = setTimeout(() => {
-        console.log('[App] Speaking timeout - auto-stopping');
-        setIsSpeaking(false);
-      }, 10000); // 10 seconds max
-
-      return () => clearTimeout(timeout);
-    }
-  }, [audioResponse]);
-
-  // Handle product search intent from backend
+  // Sync productSearch from backend to searchQuery state
+  // Append timestamp to make query unique for "show more" requests
   useEffect(() => {
     if (productSearch?.query) {
-      console.log('[App] Searching for products:', productSearch.query);
-      setSearchQuery(productSearch.query);
+      console.log('[App] New search requested:', productSearch.query, 'Count:', productSearch.count, 'Timestamp:', productSearch.timestamp);
+      // Append timestamp to query to force SDK to refetch
+      const uniqueQuery = `${productSearch.query} ${productSearch.timestamp || Date.now()}`;
+      setSearchQuery(uniqueQuery);
+      setProductCount(productSearch.count || 5);
     }
   }, [productSearch]);
 
-  // Simulate audio level animation while speaking
+  // Audio recorder
+  const { isRecording, startRecording, stopRecording } = useAudioRecorder(
+    (chunk) => sendAudioChunk(chunk)
+  );
+
+  // Sync recording with listening state
   useEffect(() => {
-    if (isSpeaking) {
-      const interval = setInterval(() => {
-        setAudioLevel(Math.random() * 100);
-      }, 100);
-      return () => clearInterval(interval);
+    if (conversationState === 'listening' && !isRecording && isConnected) {
+      startRecording();
+    } else if (conversationState !== 'listening' && isRecording) {
+      stopRecording();
     }
-    setAudioLevel(0);
-  }, [isSpeaking]);
-
-  // Handle mic button PRESS (start recording)
-  const handleMicDown = useCallback(async (e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault();
-    if (isProcessing || isRecording) return;
-
-    // Initialize AudioContext during user interaction (iOS requirement)
-    initAudioContext();
-
-    console.log('[App] Mic pressed - starting recording');
-    try {
-      await startRecording();
-      setIsRecording(true);
-    } catch (err) {
-      console.error('[App] Failed to start recording:', err);
-    }
-  }, [isProcessing, isRecording, startRecording]);
-
-  // Handle mic button RELEASE (stop and process)
-  const handleMicUp = useCallback(async (e: React.TouchEvent | React.MouseEvent) => {
-    e.preventDefault();
-    if (!isRecording) return;
-
-    console.log('[App] Mic released - stopping recording');
-
-    try {
-      const audioBase64 = await stopRecording();
-      setIsRecording(false); // Stop recording state immediately
-
-      if (audioBase64) {
-        console.log('[App] Processing audio...');
-        await processVoice(audioBase64);
-      } else {
-        console.warn('[App] No audio recorded');
-      }
-    } catch (err) {
-      console.error('[App] Failed to process audio:', err);
-      setIsRecording(false); // Ensure recording stops on error
-    }
-  }, [isRecording, stopRecording, processVoice]);
-
-  // Handle cancellation
-  const handleMicCancel = useCallback(async () => {
-    if (!isRecording) return;
-    console.log('[App] Recording cancelled');
-    await stopRecording();
-    setIsRecording(false);
-  }, [isRecording, stopRecording]);
+  }, [conversationState, isRecording, isConnected, startRecording, stopRecording]);
 
   return (
-    <div className="relative w-full h-screen bg-white flex flex-col overflow-hidden">
-      {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-        <h1 className="text-lg font-semibold text-gray-900">Jenna - Voice Shopping</h1>
-      </div>
+    <MinisRouter>
+      <div className="relative w-full min-h-screen bg-white flex flex-col overflow-hidden">
 
-      {/* Main Content Area */}
-      <div className="flex-1 overflow-y-auto pb-48">
+        {/* Header */}
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-purple-600 to-pink-600">
+          <h1 className="text-lg font-semibold text-white">
+            Jenna
+          </h1>
+          <p className="text-sm text-white opacity-90">Voice AI</p>
+        </div>
 
-        {/* Compact Conversation Header - Only shows when there's a transcript */}
-        {transcript && (
-          <div className="sticky top-0 z-10 bg-white border-b border-gray-200 shadow-sm">
-            <button
-              onClick={() => setIsConversationExpanded(!isConversationExpanded)}
-              className="w-full px-6 py-3 text-left"
-            >
-              {/* Collapsed View */}
-              {!isConversationExpanded && (
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <p className="text-xs font-medium text-gray-500">You asked:</p>
-                    </div>
-                    <p className="text-sm text-gray-900 truncate">{transcript}</p>
-                    {isSpeaking && (
-                      <div className="flex items-center gap-2 mt-1">
-                        <div className="flex gap-0.5">
-                          {[...Array(3)].map((_, i) => (
-                            <div
-                              key={i}
-                              className="w-0.5 bg-purple-500 rounded-full transition-all duration-150"
-                              style={{
-                                height: `${8 + (audioLevel + i * 8) % 12}px`,
-                              }}
-                            />
-                          ))}
-                        </div>
-                        <span className="text-xs text-purple-600 font-medium">Jenna is speaking...</span>
-                      </div>
-                    )}
-                  </div>
-                  <svg
-                    className={`w-5 h-5 text-gray-400 flex-shrink-0 transition-transform ${isConversationExpanded ? 'rotate-180' : ''}`}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    viewBox="0 0 24 24"
-                  >
-                    <polyline points="6 9 12 15 18 9"/>
-                  </svg>
-                </div>
-              )}
-
-              {/* Expanded View */}
-              {isConversationExpanded && (
-                <div>
-                  <div className="flex items-start justify-between gap-3 mb-3">
-                    <div className="flex-1">
-                      <p className="text-xs font-medium text-gray-500 mb-1">You asked:</p>
-                      <p className="text-sm text-gray-900">{transcript}</p>
-                    </div>
-                    <svg
-                      className="w-5 h-5 text-gray-400 flex-shrink-0 transition-transform rotate-180"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      viewBox="0 0 24 24"
-                    >
-                      <polyline points="6 9 12 15 18 9"/>
-                    </svg>
-                  </div>
-
-                  {aiResponse && (
-                    <div className="bg-purple-50 rounded-xl p-3 border border-purple-100">
-                      <p className="text-xs font-medium text-purple-600 mb-1">Jenna:</p>
-                      <p className="text-sm text-gray-900 leading-relaxed">{aiResponse}</p>
-                    </div>
-                  )}
-
-                  {isSpeaking && (
-                    <div className="flex items-center gap-2 mt-2">
-                      <div className="flex gap-0.5">
-                        {[...Array(4)].map((_, i) => (
-                          <div
-                            key={i}
-                            className="w-0.5 bg-purple-500 rounded-full transition-all duration-150"
-                            style={{
-                              height: `${8 + (audioLevel + i * 8) % 16}px`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                      <span className="text-xs text-purple-600 font-medium">Speaking...</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </button>
-          </div>
-        )}
-
-        {/* Product Results - Takes center stage */}
-        {products && products.length > 0 && (
-          <div className="px-6 py-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-lg font-semibold text-gray-900">
-                {products.length} {products.length === 1 ? 'result' : 'results'}
-              </h2>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              {products.map((product) => (
-                <ProductCard key={product.id} product={product} />
-              ))}
-            </div>
-          </div>
-        )}
-
-        {/* Loading State */}
-        {productsLoading && (
-          <div className="px-6 py-12 text-center">
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 rounded-full">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+        {/* Chat Messages */}
+        <div className="flex-1 overflow-y-auto pb-32 px-6 py-4">
+          {messages.length === 0 && !isConnected && (
+            <div className="flex flex-col items-center justify-center h-full text-center px-6">
+              <div className="w-24 h-24 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center mb-6 shadow-lg">
+                <Mic className="w-12 h-12 text-white" />
               </div>
-              <span className="text-sm text-gray-600">Finding products...</span>
+              <h2 className="text-2xl font-semibold text-gray-900 mb-2">Voice Shopping with Jenna</h2>
+              <p className="text-base text-gray-500 max-w-sm">
+                Tap "Start Shopping" and speak naturally to find products
+              </p>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Empty State */}
-        {!transcript && !isProcessing && (
-          <div className="flex flex-col items-center justify-center px-6 py-12 text-center">
-            <div className="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mb-6">
-              <svg width="40" height="40" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" viewBox="0 0 24 24" className="text-purple-600">
-                <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-                <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-                <line x1="12" y1="19" x2="12" y2="22"/>
-              </svg>
-            </div>
-            <h2 className="text-xl font-semibold text-gray-900 mb-2">Hi! I'm Jenna 👋</h2>
-            <p className="text-base text-gray-500 max-w-sm">
-              Your personal fashion stylist. Tap and hold the mic to tell me what you're looking for!
-            </p>
-          </div>
-        )}
-
-        {/* Error Display */}
-        {(voiceError || recorderError) && (
-          <div className="mx-6 mt-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-            <p className="text-sm text-red-600">
-              {voiceError || recorderError}
-            </p>
-          </div>
-        )}
-      </div>
-
-      {/* Bottom Voice Control - Fixed */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-8 px-6">
-        {/* Processing Indicator */}
-        {isProcessing && (
-          <div className="mb-4 text-center">
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-gray-100 rounded-full">
-              <div className="flex gap-1">
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+          {/* Message bubbles (EXACT from klariqo-widget.js) */}
+          <div className="space-y-3">
+            {messages.map((msg, index) => (
+              <div key={index} className={`flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
+                <div className={`max-w-[80%] px-4 py-2 rounded-2xl ${
+                  msg.isUser
+                    ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-br-sm'
+                    : 'bg-gray-100 text-gray-900 rounded-bl-sm'
+                }`}>
+                  <p className="text-sm leading-relaxed">{msg.text}</p>
+                </div>
               </div>
-              <span className="text-sm text-gray-600">Processing...</span>
-            </div>
-          </div>
-        )}
+            ))}
 
-        {/* Voice Button */}
-        <div className="flex flex-col items-center">
-          <button
-            onTouchStart={handleMicDown}
-            onTouchEnd={handleMicUp}
-            onTouchCancel={handleMicCancel}
-            onMouseDown={handleMicDown}
-            onMouseUp={handleMicUp}
-            onMouseLeave={handleMicCancel}
-            className={`relative w-20 h-20 rounded-full transition-all duration-200 flex items-center justify-center ${
-              isRecording
-                ? 'bg-red-500 scale-110 shadow-lg shadow-red-200'
-                : 'bg-purple-600 shadow-lg shadow-purple-200'
-            } ${isProcessing ? 'opacity-50 cursor-not-allowed' : 'active:scale-95'}`}
-            disabled={isProcessing}
-          >
-            {/* Pulse animation when recording */}
-            {isRecording && (
-              <>
-                <span className="absolute inset-0 rounded-full bg-red-500 animate-ping opacity-75" />
-                <span className="absolute inset-0 rounded-full bg-red-500 animate-pulse" />
-              </>
+            {/* Products display - shown as separate message after AI response */}
+            {products && products.length > 0 && (
+              <div className="flex justify-start">
+                <div className="max-w-[90%] space-y-3">
+                  {products.map((product) => (
+                    <ProductCard key={product.id} product={product} />
+                  ))}
+                </div>
+              </div>
             )}
 
-            {/* Microphone Icon */}
-            <svg
-              className="relative z-10 w-9 h-9 text-white"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2.5"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              viewBox="0 0 24 24"
-            >
-              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/>
-              <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
-              <line x1="12" y1="19" x2="12" y2="22"/>
-            </svg>
-          </button>
+            {/* Products loading indicator */}
+            {productsLoading && productSearch?.query && (
+              <div className="flex justify-start">
+                <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1">
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                    <span className="text-sm text-gray-600">Finding products...</span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
 
-          {/* Instruction Text */}
-          <p className="mt-4 text-sm font-medium text-gray-600">
-            {isRecording
-              ? 'Listening...'
-              : isProcessing
-                ? 'Processing...'
-                : 'Hold to speak'
-            }
-          </p>
+          {error && (
+            <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
+              <p className="text-sm text-red-600">{error}</p>
+            </div>
+          )}
         </div>
-      </div>
 
-      {/* Audio Player (invisible) */}
-      <AudioPlayer
-        audioBase64={currentAudio}
-        onPlaybackComplete={() => setIsSpeaking(false)}
-      />
-    </div>
+        {/* Bottom Button - Fixed */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-8 px-6">
+          {!isConnected ? (
+            <Button
+              onClick={connect}
+              variant="primary"
+              className="w-full h-14 rounded-full shadow-lg"
+            >
+              <div className="flex items-center justify-center gap-2">
+                <Mic className="w-5 h-5" />
+                <span className="font-semibold">Start Shopping</span>
+              </div>
+            </Button>
+          ) : (
+            <Button
+              onClick={disconnect}
+              variant="destructive"
+              className="w-full h-14 rounded-full shadow-lg"
+            >
+              <div className="flex items-center justify-center gap-2">
+                <Mic className="w-5 h-5" />
+                <span className="font-semibold">End Shopping</span>
+              </div>
+            </Button>
+          )}
+        </div>
+
+        {/* Audio Player - hidden */}
+        <AudioPlayer onAudioChunkHandler={setAudioChunkHandler} />
+      </div>
+    </MinisRouter>
   );
 }

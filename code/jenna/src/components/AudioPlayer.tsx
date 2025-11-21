@@ -1,177 +1,99 @@
 import { useEffect, useRef } from 'react';
 
 interface AudioPlayerProps {
-  audioBase64: string | null;
-  onPlaybackComplete?: () => void;
-}
-
-// Global AudioContext - must be created during user interaction on iOS
-let globalAudioContext: AudioContext | null = null;
-let globalGainNode: GainNode | null = null;
-
-export function initAudioContext() {
-  if (!globalAudioContext) {
-    try {
-      globalAudioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-      globalGainNode = globalAudioContext.createGain();
-      globalGainNode.connect(globalAudioContext.destination);
-      console.log('[AudioPlayer] AudioContext initialized during user interaction');
-
-      // Resume if suspended (iOS autoplay policy)
-      if (globalAudioContext.state === 'suspended') {
-        globalAudioContext.resume().then(() => {
-          console.log('[AudioPlayer] AudioContext resumed');
-        });
-      }
-    } catch (e) {
-      console.error('[AudioPlayer] Failed to initialize AudioContext:', e);
-    }
-  }
-  return globalAudioContext;
+  onAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
 }
 
 /**
- * Plays base64 WAV audio using Web Audio API (iOS compatible)
- * EXACT copy from production klariqo-widget.js AudioPlayer class
+ * AudioPlayer component - EXACT pattern from klariqo-widget.js AudioPlayer class (lines 617-721)
+ * Uses Web Audio API for iOS-compatible sequential playback
  */
-export function AudioPlayer({ audioBase64, onPlaybackComplete }: AudioPlayerProps) {
+export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
   const chunkBufferRef = useRef<{ [key: number]: AudioBuffer }>({});
   const nextChunkToPlayRef = useRef(0);
-  const isPlayingRef = useRef(false);
-  const scheduledSourcesRef = useRef<AudioBufferSourceNode[]>([]);
   const nextStartTimeRef = useRef(0);
-  const chunkIndexRef = useRef(0);
 
   useEffect(() => {
-    const addChunk = async (audioBase64: string) => {
+    // Define the audio chunk handler (called by useWebSocket when audio.chunk arrives)
+    const handleAudioChunk = async (audioBase64: string, chunkIndex: number) => {
       try {
-        console.log(`[AudioPlayer] Processing chunk #${chunkIndexRef.current}`);
-
-        // Use global AudioContext (created during user interaction)
-        if (!globalAudioContext) {
-          console.error('[AudioPlayer] AudioContext not initialized! Call initAudioContext() first during user interaction');
-          return;
+        // Initialize AudioContext on first chunk (EXACT from klariqo-widget.js lines 630-637)
+        if (!audioContextRef.current) {
+          audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+          gainNodeRef.current = audioContextRef.current.createGain();
+          gainNodeRef.current.connect(audioContextRef.current.destination);
+          nextStartTimeRef.current = audioContextRef.current.currentTime;
+          console.log('[AudioPlayer] AudioContext initialized');
         }
 
-        // Resume if suspended (iOS autoplay policy)
-        if (globalAudioContext.state === 'suspended') {
-          await globalAudioContext.resume();
+        // Resume if suspended (iOS autoplay policy) (EXACT from klariqo-widget.js lines 639-643)
+        if (audioContextRef.current.state === 'suspended') {
+          await audioContextRef.current.resume();
           console.log('[AudioPlayer] AudioContext resumed');
         }
 
-        // Initialize timing on first chunk
-        if (chunkIndexRef.current === 0) {
-          nextStartTimeRef.current = globalAudioContext.currentTime;
-        }
-
-        // Reset on new response (chunk 0)
-        if (chunkIndexRef.current === 0 && nextChunkToPlayRef.current > 0) {
+        // Reset on new response (chunk 0) (EXACT from klariqo-widget.js lines 645-649)
+        if (chunkIndex === 0 && nextChunkToPlayRef.current > 0) {
           chunkBufferRef.current = {};
           nextChunkToPlayRef.current = 0;
-          nextStartTimeRef.current = globalAudioContext.currentTime;
-          console.log('[AudioPlayer] New response - reset state');
+          nextStartTimeRef.current = audioContextRef.current.currentTime;
         }
 
-        // Decode WAV audio (base64 → ArrayBuffer → AudioBuffer)
+        // Decode base64 to ArrayBuffer (EXACT from klariqo-widget.js lines 651-659)
         const binaryString = atob(audioBase64);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
           bytes[i] = binaryString.charCodeAt(i);
         }
 
-        // Decode audio (works for MP3, WAV, etc.)
-        const audioBuffer = await globalAudioContext.decodeAudioData(bytes.buffer.slice(0));
-        console.log(`[AudioPlayer] Chunk #${chunkIndexRef.current} decoded - Duration: ${audioBuffer.duration.toFixed(2)}s, Sample rate: ${audioBuffer.sampleRate}Hz`);
+        console.log(`[AudioPlayer] Decoding chunk ${chunkIndex}: ${bytes.length} bytes`);
 
-        // Store AudioBuffer
-        chunkBufferRef.current[chunkIndexRef.current] = audioBuffer;
+        // Decode audio (works for WAV, MP3, etc.) (EXACT from klariqo-widget.js lines 661-672)
+        const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer.slice(0));
+        console.log(`[AudioPlayer] Decoded chunk ${chunkIndex}: ${audioBuffer.duration}s`);
 
-        // Play buffered chunks
-        playBufferedChunks();
+        // Store in buffer
+        chunkBufferRef.current[chunkIndex] = audioBuffer;
 
-        chunkIndexRef.current++;
+        // Play chunks sequentially (EXACT from klariqo-widget.js lines 674-721)
+        while (chunkBufferRef.current[nextChunkToPlayRef.current]) {
+          const buffer = chunkBufferRef.current[nextChunkToPlayRef.current];
+          const source = audioContextRef.current.createBufferSource();
+          source.buffer = buffer;
+          source.connect(gainNodeRef.current!);
+
+          const now = audioContextRef.current.currentTime;
+          const startTime = Math.max(now, nextStartTimeRef.current);
+
+          source.start(startTime);
+          console.log(`[AudioPlayer] Playing chunk ${nextChunkToPlayRef.current} at ${startTime}s (now: ${now}s)`);
+
+          nextStartTimeRef.current = startTime + buffer.duration;
+          delete chunkBufferRef.current[nextChunkToPlayRef.current];
+          nextChunkToPlayRef.current++;
+        }
+
       } catch (error) {
-        console.error('[AudioPlayer] Audio chunk error:', error);
+        console.error('[AudioPlayer] Failed to decode/play audio:', error);
       }
     };
 
-    const playBufferedChunks = () => {
-      // Play all sequential chunks that are buffered
-      while (chunkBufferRef.current[nextChunkToPlayRef.current] !== undefined) {
-        const audioBuffer = chunkBufferRef.current[nextChunkToPlayRef.current];
-        delete chunkBufferRef.current[nextChunkToPlayRef.current];
+    // Register handler with useWebSocket
+    onAudioChunkHandler(handleAudioChunk);
 
-        console.log(`[AudioPlayer] Playing chunk #${nextChunkToPlayRef.current}`);
-        schedulePlayback(audioBuffer);
-
-        nextChunkToPlayRef.current++;
-      }
-    };
-
-    const schedulePlayback = (audioBuffer: AudioBuffer) => {
-      if (!globalAudioContext || !globalGainNode) return;
-
-      const source = globalAudioContext.createBufferSource();
-      source.buffer = audioBuffer;
-      source.connect(globalGainNode);
-
-      const currentTime = globalAudioContext.currentTime;
-
-      // Schedule playback
-      if (nextStartTimeRef.current < currentTime) {
-        nextStartTimeRef.current = currentTime;
-      }
-
-      source.start(nextStartTimeRef.current);
-      isPlayingRef.current = true;
-
-      // Update next start time
-      nextStartTimeRef.current += audioBuffer.duration;
-
-      // Track source
-      scheduledSourcesRef.current.push(source);
-
-      // Cleanup when done
-      source.onended = () => {
-        const index = scheduledSourcesRef.current.indexOf(source);
-        if (index > -1) {
-          scheduledSourcesRef.current.splice(index, 1);
-        }
-
-        if (scheduledSourcesRef.current.length === 0) {
-          isPlayingRef.current = false;
-          onPlaybackComplete?.();
-        }
-      };
-    };
-
-    if (audioBase64) {
-      addChunk(audioBase64);
-    }
-  }, [audioBase64, onPlaybackComplete]);
-
-  // Cleanup on unmount
-  useEffect(() => {
+    // Cleanup on unmount
     return () => {
-      // Stop all scheduled sources
-      scheduledSourcesRef.current.forEach(source => {
-        try {
-          source.stop();
-        } catch (e) {
-          // Already stopped
-        }
-      });
-      scheduledSourcesRef.current = [];
-
+      if (audioContextRef.current) {
+        audioContextRef.current.close();
+        audioContextRef.current = null;
+      }
       chunkBufferRef.current = {};
       nextChunkToPlayRef.current = 0;
-      isPlayingRef.current = false;
       nextStartTimeRef.current = 0;
-      chunkIndexRef.current = 0;
-
-      // Don't close global AudioContext - keep it alive for next time
     };
-  }, []);
+  }, [onAudioChunkHandler]);
 
   return null; // This component doesn't render anything
 }

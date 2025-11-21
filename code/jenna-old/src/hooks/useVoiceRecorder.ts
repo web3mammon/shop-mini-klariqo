@@ -1,24 +1,29 @@
 import { useState, useRef, useCallback } from 'react';
 import { useRequestPermissions } from '@shopify/shop-minis-react';
 
-interface UseVoiceRecorderReturn {
+interface VoiceRecorderHook {
   isRecording: boolean;
   startRecording: () => Promise<void>;
-  stopRecording: () => Promise<void>;
+  stopRecording: () => Promise<string | null>; // Returns complete audio
   error: string | null;
 }
 
 /**
- * Hook to record audio from microphone and stream 24kHz PCM chunks
+ * Hook to record audio from microphone and accumulate complete recording
+ * Returns full audio as base64 when recording stops
+ *
  * Permissions: Requires MICROPHONE in manifest.json
+ * (Shop app handles permission prompts automatically)
  */
-export function useVoiceRecorder(onAudioChunk?: (chunk: string) => void): UseVoiceRecorderReturn {
+export function useVoiceRecorder(): VoiceRecorderHook {
   const [isRecording, setIsRecording] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const processorNodeRef = useRef<ScriptProcessorNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
+  const audioChunksRef = useRef<Uint8Array[]>([]); // Store raw bytes, not base64
   const isRecordingRef = useRef<boolean>(false);
 
   const { requestPermission } = useRequestPermissions();
@@ -26,6 +31,7 @@ export function useVoiceRecorder(onAudioChunk?: (chunk: string) => void): UseVoi
   const startRecording = useCallback(async () => {
     try {
       setError(null);
+      audioChunksRef.current = []; // Clear previous chunks
 
       // Request MICROPHONE permission from Shop app
       console.log('[VoiceRecorder] Requesting microphone permission...');
@@ -67,18 +73,9 @@ export function useVoiceRecorder(onAudioChunk?: (chunk: string) => void): UseVoi
           pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
         }
 
-        // Convert to base64 and send chunk
+        // Store raw bytes (not base64)
         const bytes = new Uint8Array(pcmData.buffer);
-        let binary = '';
-        for (let i = 0; i < bytes.length; i++) {
-          binary += String.fromCharCode(bytes[i]);
-        }
-        const base64Chunk = btoa(binary);
-
-        // Send chunk via callback
-        if (onAudioChunk) {
-          onAudioChunk(base64Chunk);
-        }
+        audioChunksRef.current.push(bytes);
       };
 
       source.connect(processor);
@@ -86,16 +83,16 @@ export function useVoiceRecorder(onAudioChunk?: (chunk: string) => void): UseVoi
 
       isRecordingRef.current = true;
       setIsRecording(true);
-      console.log('[VoiceRecorder] Recording started (24kHz PCM streaming)');
+      console.log('[VoiceRecorder] Recording started (24kHz PCM)');
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       setError(`Microphone access denied: ${errorMessage}`);
       console.error('[VoiceRecorder] Error:', err);
     }
-  }, [requestPermission, onAudioChunk]);
+  }, [requestPermission]);
 
-  const stopRecording = useCallback(async (): Promise<void> => {
+  const stopRecording = useCallback(async (): Promise<string | null> => {
     if (processorNodeRef.current) {
       processorNodeRef.current.disconnect();
       processorNodeRef.current = null;
@@ -114,6 +111,34 @@ export function useVoiceRecorder(onAudioChunk?: (chunk: string) => void): UseVoi
     isRecordingRef.current = false;
     setIsRecording(false);
     console.log('[VoiceRecorder] Recording stopped');
+
+    // Combine all audio chunks
+    if (audioChunksRef.current.length === 0) {
+      console.warn('[VoiceRecorder] No audio recorded');
+      return null;
+    }
+
+    // Calculate total size
+    const totalLength = audioChunksRef.current.reduce((sum, chunk) => sum + chunk.length, 0);
+
+    // Combine all chunks into single Uint8Array
+    const combinedBytes = new Uint8Array(totalLength);
+    let offset = 0;
+    for (const chunk of audioChunksRef.current) {
+      combinedBytes.set(chunk, offset);
+      offset += chunk.length;
+    }
+
+    // Convert to base64 once
+    let binary = '';
+    for (let i = 0; i < combinedBytes.length; i++) {
+      binary += String.fromCharCode(combinedBytes[i]);
+    }
+    const base64Audio = btoa(binary);
+
+    console.log(`[VoiceRecorder] Combined ${audioChunksRef.current.length} chunks, total ${totalLength} bytes`);
+
+    return base64Audio;
   }, []);
 
   return {
