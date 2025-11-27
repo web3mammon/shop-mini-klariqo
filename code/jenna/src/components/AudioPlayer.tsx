@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { useEffect, useRef } from 'react';
 
 interface AudioPlayerControls {
@@ -35,13 +34,11 @@ export function AudioPlayer({ onAudioChunkHandler, onPlayerReady }: AudioPlayerP
           gainNodeRef.current = audioContextRef.current.createGain();
           gainNodeRef.current.connect(audioContextRef.current.destination);
           nextStartTimeRef.current = audioContextRef.current.currentTime;
-          console.log('[AudioPlayer] AudioContext initialized');
         }
 
         // Resume if suspended (iOS autoplay policy) (EXACT from klariqo-widget.js lines 639-643)
         if (audioContextRef.current.state === 'suspended') {
           await audioContextRef.current.resume();
-          console.log('[AudioPlayer] AudioContext resumed');
         }
 
         // Reset on new response (chunk 0) (EXACT from klariqo-widget.js lines 645-649)
@@ -58,11 +55,8 @@ export function AudioPlayer({ onAudioChunkHandler, onPlayerReady }: AudioPlayerP
           bytes[i] = binaryString.charCodeAt(i);
         }
 
-        console.log(`[AudioPlayer] Decoding chunk ${chunkIndex}: ${bytes.length} bytes`);
-
         // Decode audio (works for WAV, MP3, etc.) (EXACT from klariqo-widget.js lines 661-672)
         const audioBuffer = await audioContextRef.current.decodeAudioData(bytes.buffer.slice(0));
-        console.log(`[AudioPlayer] Decoded chunk ${chunkIndex}: ${audioBuffer.duration}s`);
 
         // Store in buffer
         chunkBufferRef.current[chunkIndex] = audioBuffer;
@@ -94,7 +88,6 @@ export function AudioPlayer({ onAudioChunkHandler, onPlayerReady }: AudioPlayerP
           };
 
           source.start(startTime);
-          console.log(`[AudioPlayer] Playing chunk ${nextChunkToPlayRef.current} at ${startTime}s (now: ${now}s)`);
 
           nextStartTimeRef.current = startTime + buffer.duration;
           delete chunkBufferRef.current[nextChunkToPlayRef.current];
@@ -102,13 +95,12 @@ export function AudioPlayer({ onAudioChunkHandler, onPlayerReady }: AudioPlayerP
         }
 
       } catch (error) {
-        console.error('[AudioPlayer] Failed to decode/play audio:', error);
+        // Silent error handling
       }
     };
 
     // Control methods for interrupt detection (EXACT from production klariqo-widget.js)
     const stop = () => {
-      console.log('[AudioPlayer] Stopping all audio (interrupt)');
       // Stop all active sources
       activeSourcesRef.current.forEach(source => {
         try {

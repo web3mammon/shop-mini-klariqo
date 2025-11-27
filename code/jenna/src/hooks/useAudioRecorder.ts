@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { useState, useRef, useCallback } from 'react';
 import { useRequestPermissions } from '@shopify/shop-minis-react';
 
@@ -22,9 +21,7 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
       setError(null);
 
       // Request MICROPHONE permission from Shop app
-      console.log('[AudioRecorder] Requesting microphone permission...');
       await requestPermission({ permission: 'MICROPHONE' });
-      console.log('[AudioRecorder] Permission granted');
 
       // Request microphone access (EXACT from klariqo-widget.js lines 532-540)
       // eslint-disable-next-line shop-minis/validate-manifest
@@ -72,10 +69,8 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
       processor.connect(audioContext.destination);
 
       setIsRecording(true);
-      console.log('[AudioRecorder] Recording started (24kHz PCM streaming)');
 
     } catch (err) {
-      console.error('[AudioRecorder] Error:', err);
 
       // User-friendly error messages based on error type
       if (err instanceof Error) {
@@ -120,7 +115,6 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
     }
 
     setIsRecording(false);
-    console.log('[AudioRecorder] Recording stopped');
   }, []);
 
   return {

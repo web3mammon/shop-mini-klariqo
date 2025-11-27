@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { useState, useRef, useCallback } from 'react';
 
 interface ProductSearchIntent {
@@ -63,17 +62,14 @@ export function useWebSocket(): UseWebSocketReturn {
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      console.log('[WebSocket] Already connected');
       return;
     }
 
-    console.log('[WebSocket] Connecting to:', WEBSOCKET_URL);
     setConversationState('connecting');
 
     const ws = new WebSocket(WEBSOCKET_URL);
 
     ws.onopen = () => {
-      console.log('[WebSocket] Connected');
       setIsConnected(true);
       setConversationState('listening');
       setError(null);
@@ -83,11 +79,9 @@ export function useWebSocket(): UseWebSocketReturn {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('[WebSocket] Message:', data.type);
 
         switch (data.type) {
           case 'connection.established':
-            console.log('[WebSocket] Session established:', data.sessionId);
             break;
 
           case 'ping':
@@ -102,7 +96,6 @@ export function useWebSocket(): UseWebSocketReturn {
             if (!data.isFinal && !hasInterruptedRef.current) {
               // Check if audio is actually playing before interrupting
               if (audioPlayerControlsRef.current?.getIsPlaying()) {
-                console.log('[WebSocket] 🛑 User started speaking - interrupting AI');
                 audioPlayerControlsRef.current.stop();
 
                 // Send interrupt signal to backend
@@ -116,14 +109,12 @@ export function useWebSocket(): UseWebSocketReturn {
 
             // Only add user message when final (EXACT from klariqo-widget.js line 988-991)
             if (data.isFinal) {
-              console.log('[WebSocket] User said:', data.text);
               setMessages(prev => [...prev, { text: data.text, isUser: true }]);
             }
             break;
 
           case 'text.chunk':
             // Add AI message (EXACT from klariqo-widget.js line 994-996)
-            console.log('[WebSocket] AI said:', data.text);
             setMessages(prev => [...prev, { text: data.text, isUser: false }]);
             // Reset interrupt flag when AI starts speaking (ready for next interrupt)
             hasInterruptedRef.current = false;
@@ -137,13 +128,10 @@ export function useWebSocket(): UseWebSocketReturn {
             break;
 
           case 'audio.complete':
-            console.log('[WebSocket] Audio playback complete');
             break;
 
           case 'products.search':
             // New product search intent received from backend
-            console.log('[WebSocket] ✅ RECEIVED products.search (NEW SEARCH) from backend:', data);
-            console.log('[WebSocket] Query:', data.query, 'Count:', data.count, 'Timestamp:', data.timestamp);
             setProductSearch({
               query: data.query,
               filters: data.filters || {},
@@ -151,13 +139,10 @@ export function useWebSocket(): UseWebSocketReturn {
               timestamp: data.timestamp
             });
             setShouldFetchMore(false); // Reset pagination flag for new search
-            console.log('[WebSocket] ✅ productSearch state updated (NEW SEARCH)');
             break;
 
           case 'products.fetchMore':
             // Pagination request received from backend
-            console.log('[WebSocket] 🔄 RECEIVED products.fetchMore (PAGINATION) from backend:', data);
-            console.log('[WebSocket] Query:', data.query, 'Count:', data.count, 'Timestamp:', data.timestamp);
             // Update productSearch with pagination data (includes new count!)
             setProductSearch({
               query: data.query,
@@ -166,30 +151,26 @@ export function useWebSocket(): UseWebSocketReturn {
               timestamp: data.timestamp
             });
             setShouldFetchMore(true); // Trigger pagination in App.tsx
-            console.log('[WebSocket] ✅ productSearch updated with count:', data.count);
             break;
 
           case 'error':
-            console.error('[WebSocket] Server error:', data.message);
             setError(data.message);
             break;
 
           default:
-            console.warn('[WebSocket] Unknown message type:', data.type);
+            break;
         }
       } catch (error) {
-        console.error('[WebSocket] Failed to parse message:', error);
+        // Silent error handling
       }
     };
 
-    ws.onerror = (error) => {
-      console.error('[WebSocket] Error:', error);
+    ws.onerror = () => {
       setError('Connection error');
       setConversationState('idle');
     };
 
-    ws.onclose = (event) => {
-      console.log(`[WebSocket] Connection closed - code: ${event.code}, reason: ${event.reason || 'none'}`);
+    ws.onclose = () => {
       setIsConnected(false);
       setConversationState('idle');
       wsRef.current = null;
@@ -197,7 +178,6 @@ export function useWebSocket(): UseWebSocketReturn {
       // Auto-reconnect if NOT intentional disconnect and attempts < max
       if (!isIntentionalDisconnectRef.current && reconnectAttemptsRef.current < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttemptsRef.current++;
-        console.log(`[WebSocket] 🔄 Auto-reconnecting... (attempt ${reconnectAttemptsRef.current}/${MAX_RECONNECT_ATTEMPTS})`);
 
         // Clear any existing timeout
         if (reconnectTimeoutRef.current) {
@@ -207,12 +187,10 @@ export function useWebSocket(): UseWebSocketReturn {
         // Attempt reconnection after 1 second
         reconnectTimeoutRef.current = setTimeout(() => {
           if (!isIntentionalDisconnectRef.current) {
-            console.log('[WebSocket] Reconnecting...');
             connect();
           }
         }, 1000);
       } else if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
-        console.error('[WebSocket] ❌ Max reconnect attempts reached');
         setError('Connection lost. Please restart the app.');
       }
     };
@@ -222,7 +200,6 @@ export function useWebSocket(): UseWebSocketReturn {
 
   const disconnect = useCallback(() => {
     if (wsRef.current) {
-      console.log('[WebSocket] Disconnecting (user-initiated)...');
       isIntentionalDisconnectRef.current = true; // Mark as intentional disconnect
 
       // Clear any pending reconnection
@@ -259,12 +236,10 @@ export function useWebSocket(): UseWebSocketReturn {
   }, []);
 
   const resetFetchMore = useCallback(() => {
-    console.log('[WebSocket] 🔄 resetFetchMore() called - setting shouldFetchMore to FALSE');
     setShouldFetchMore(false);
   }, []);
 
   const setAudioPlayerControls = useCallback((controls: AudioPlayerControls) => {
-    console.log('[WebSocket] 🎵 Audio player controls registered for interrupt detection');
     audioPlayerControlsRef.current = controls;
   }, []);
 

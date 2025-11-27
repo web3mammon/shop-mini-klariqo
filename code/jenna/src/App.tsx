@@ -1,6 +1,5 @@
-/* eslint-disable no-console */
 import { useState, useEffect, useRef } from 'react';
-import { MinisRouter, useProductSearch, ProductLink, Image } from '@shopify/shop-minis-react';
+import { MinisRouter, useProductSearch, ProductLink, Image, Button } from '@shopify/shop-minis-react';
 import { Mic, User, Square } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
@@ -56,7 +55,6 @@ export function App() {
   // Handle NEW SEARCH
   useEffect(() => {
     if (productSearch?.query) {
-      console.log('[App] 🔍 NEW SEARCH requested:', productSearch.query);
       const uniqueQuery = `${productSearch.query} ${productSearch.timestamp || Date.now()}`;
       setSearchQuery(uniqueQuery);
       setStartIndex(0);
@@ -117,12 +115,11 @@ export function App() {
               <Image
                 src={jennaIllustration}
                 alt="Jenna"
-                className="object-contain mb-0"
-                style={{ width: '230px', maxWidth: '60%' }}
+                className="object-contain mb-0 w-[230px] max-w-[60%]"
               />
 
               {/* Intro Text - System font with custom spacing */}
-              <p className="text-lg text-gray-700 max-w-sm" style={{ lineHeight: '1.3', letterSpacing: '0' }}>
+              <p className="text-lg text-gray-700 max-w-sm leading-[1.3] tracking-normal">
                 I'm Jenna, your personalized shopping assistant. Tap the mic below to talk to me for product recommendations and a lot more.
               </p>
             </div>
@@ -176,9 +173,9 @@ export function App() {
                 <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm">
                   <div className="flex items-center gap-2">
                     <div className="flex gap-1">
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:0ms]" />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:150ms]" />
+                      <div className="w-2 h-2 bg-gray-400 rounded-full animate-bounce [animation-delay:300ms]" />
                     </div>
                     <span className="text-sm text-gray-600">Finding products...</span>
                   </div>
@@ -190,37 +187,42 @@ export function App() {
           {error && (
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-sm text-red-600 mb-2">{error}</p>
-              <button
+              <Button
                 onClick={() => {
                   disconnect();
                   setTimeout(() => connect(), 500);
                 }}
-                className="text-sm text-red-700 font-medium underline hover:text-red-800"
+                variant="link"
+                className="text-red-700 hover:text-red-800"
               >
                 Try Again
-              </button>
+              </Button>
             </div>
           )}
         </div>
 
-        {/* Bottom Button - Circular */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center" style={{ paddingBottom: '5rem' }}>
+        {/* Bottom Buttons */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center pb-20">
           {!isConnected ? (
-            <button
+            <Button
               onClick={connect}
-              className="rounded-full bg-gradient-to-br from-purple-600 to-pink-600 shadow-2xl flex items-center justify-center active:scale-95 transition-transform"
-              style={{ width: '90px', height: '90px' }}
+              variant="default"
+              size="lg"
+              className="shadow-2xl"
             >
-              <Mic className="text-white" style={{ width: '40px', height: '40px' }} />
-            </button>
+              <Mic className="mr-2" />
+              Start Voice Chat
+            </Button>
           ) : (
-            <button
+            <Button
               onClick={disconnect}
-              className="rounded-full bg-red-500 shadow-2xl flex items-center justify-center active:scale-95 transition-transform"
-              style={{ width: '90px', height: '90px' }}
+              variant="destructive"
+              size="lg"
+              className="shadow-2xl"
             >
-              <Square className="text-white fill-white" style={{ width: '36px', height: '36px' }} />
-            </button>
+              <Square className="mr-2" />
+              Stop
+            </Button>
           )}
         </div>
 
