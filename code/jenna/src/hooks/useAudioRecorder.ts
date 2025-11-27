@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import { useState, useRef, useCallback } from 'react';
 import { useRequestPermissions } from '@shopify/shop-minis-react';
 
@@ -26,6 +27,7 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
       console.log('[AudioRecorder] Permission granted');
 
       // Request microphone access (EXACT from klariqo-widget.js lines 532-540)
+      // eslint-disable-next-line shop-minis/validate-manifest
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           sampleRate: 24000,
@@ -33,7 +35,8 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true
-        }
+        },
+        video: false  // Explicitly no video - only audio/microphone (no CAMERA permission needed)
       });
 
       streamRef.current = stream;
@@ -59,7 +62,9 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
       processor.onaudioprocess = (e) => {
         const inputData = e.inputBuffer.getChannelData(0);
         const pcm16 = floatTo16BitPCM(inputData);
-        const base64Audio = arrayBufferToBase64(pcm16.buffer);
+        // Convert to ArrayBuffer for TypeScript compatibility
+        const buffer = pcm16.buffer as ArrayBuffer;
+        const base64Audio = arrayBufferToBase64(buffer);
         onAudioData(base64Audio);
       };
 

@@ -1,0 +1,6 @@
+Shop Mini submitted for review
+Thank you for your submission. Your Shop Mini has been added to the review queue. Your submission reference is: GQQYKD
+Next steps
+• Keep your eyes on your email for communication regarding your submission
+• To check the status of your submission at any point, run `npx shop-minis check-submission`
+• To cancel your submission at any point, run `npx shop-minis cancel-submission`

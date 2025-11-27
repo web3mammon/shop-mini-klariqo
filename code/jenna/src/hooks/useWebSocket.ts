@@ -1,3 +1,4 @@
+/* eslint-disable no-console */
 import { useState, useRef, useCallback } from 'react';
 
 interface ProductSearchIntent {
@@ -33,7 +34,7 @@ interface UseWebSocketReturn {
   setAudioPlayerControls: (controls: AudioPlayerControls) => void; // NEW: for interrupt detection
 }
 
-const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/voice-websocket';
+const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/mini-voice-websocket';
 
 /**
  * WebSocket connection hook - EXACT pattern from klariqo-widget.js

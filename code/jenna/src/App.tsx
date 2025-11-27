@@ -1,9 +1,12 @@
+/* eslint-disable no-console */
 import { useState, useEffect, useRef } from 'react';
-import { Button, MinisRouter, useProductSearch, ProductCard } from '@shopify/shop-minis-react';
-import { Mic } from 'lucide-react';
+import { MinisRouter, useProductSearch, ProductCard, Image } from '@shopify/shop-minis-react';
+import { Mic, User, Square } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { AudioPlayer } from './components/AudioPlayer';
+import jennaIllustration from './assets/jenna-illustration.png';
+import jennaProfile from './assets/jenna-profile.png';
 
 interface AudioPlayerControls {
   stop: () => void;
@@ -108,39 +111,53 @@ export function App() {
     <MinisRouter>
       <div className="relative w-full min-h-screen bg-white flex flex-col overflow-hidden">
 
-        {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100 bg-gradient-to-r from-purple-600 to-pink-600">
-          <h1 className="text-lg font-semibold text-white">
-            Jenna
-          </h1>
-          <p className="text-sm text-white opacity-90">Voice AI</p>
-        </div>
-
         {/* Chat Messages */}
-        <div className="flex-1 overflow-y-auto pb-32 px-6 py-4">
+        <div className="flex-1 overflow-y-auto pb-32 px-6 py-8">
           {messages.length === 0 && !isConnected && (
             <div className="flex flex-col items-center justify-center h-full text-center px-6">
-              <div className="w-24 h-24 bg-gradient-to-br from-purple-500 to-pink-500 rounded-full flex items-center justify-center mb-6 shadow-lg">
-                <Mic className="w-12 h-12 text-white" />
-              </div>
-              <h2 className="text-2xl font-semibold text-gray-900 mb-2">Voice Shopping with Jenna</h2>
-              <p className="text-base text-gray-500 max-w-sm">
-                Tap "Start Shopping" and speak naturally to find products
+              {/* Jenna Illustration with "Hi" text combined */}
+              <Image
+                src={jennaIllustration}
+                alt="Jenna"
+                className="object-contain mb-0"
+                style={{ width: '230px', maxWidth: '60%' }}
+              />
+
+              {/* Intro Text - System font with custom spacing */}
+              <p className="text-lg text-gray-700 max-w-sm" style={{ lineHeight: '1.3', letterSpacing: '0' }}>
+                I'm Jenna, your personalized shopping assistant. Tap the mic below to talk to me for product recommendations and a lot more.
               </p>
             </div>
           )}
 
-          {/* Message bubbles (EXACT from klariqo-widget.js) */}
+          {/* Message bubbles with avatars */}
           <div className="space-y-3">
             {messages.map((msg, index) => (
-              <div key={index} className={`flex ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
-                <div className={`max-w-[80%] px-4 py-2 rounded-2xl ${
+              <div key={index} className={`flex gap-2 items-end ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
+                {/* Jenna Avatar (left side for AI messages) */}
+                {!msg.isUser && (
+                  <Image
+                    src={jennaProfile}
+                    alt="Jenna"
+                    className="w-8 h-8 rounded-full flex-shrink-0"
+                  />
+                )}
+
+                {/* Message Bubble */}
+                <div className={`max-w-[75%] px-4 py-2 rounded-2xl ${
                   msg.isUser
                     ? 'bg-gradient-to-r from-purple-600 to-pink-600 text-white rounded-br-sm'
                     : 'bg-gray-100 text-gray-900 rounded-bl-sm'
                 }`}>
                   <p className="text-sm leading-relaxed">{msg.text}</p>
                 </div>
+
+                {/* User Avatar (right side for user messages) */}
+                {msg.isUser && (
+                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-purple-500 to-pink-500 flex items-center justify-center flex-shrink-0">
+                    <User className="w-4 h-4 text-white" />
+                  </div>
+                )}
               </div>
             ))}
 
@@ -180,30 +197,24 @@ export function App() {
           )}
         </div>
 
-        {/* Bottom Button - Fixed */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-8 pb-8 px-6">
+        {/* Bottom Button - Circular */}
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center" style={{ paddingBottom: '5rem' }}>
           {!isConnected ? (
-            <Button
+            <button
               onClick={connect}
-              variant="primary"
-              className="w-full h-14 rounded-full shadow-lg"
+              className="rounded-full bg-gradient-to-br from-purple-600 to-pink-600 shadow-2xl flex items-center justify-center active:scale-95 transition-transform"
+              style={{ width: '180px', height: '180px' }}
             >
-              <div className="flex items-center justify-center gap-2">
-                <Mic className="w-5 h-5" />
-                <span className="font-semibold">Start Shopping</span>
-              </div>
-            </Button>
+              <Mic className="text-white" style={{ width: '84px', height: '84px' }} />
+            </button>
           ) : (
-            <Button
+            <button
               onClick={disconnect}
-              variant="destructive"
-              className="w-full h-14 rounded-full shadow-lg"
+              className="rounded-full bg-red-500 shadow-2xl flex items-center justify-center active:scale-95 transition-transform"
+              style={{ width: '90px', height: '90px' }}
             >
-              <div className="flex items-center justify-center gap-2">
-                <Mic className="w-5 h-5" />
-                <span className="font-semibold">End Shopping</span>
-              </div>
-            </Button>
+              <Square className="text-white fill-white" style={{ width: '36px', height: '36px' }} />
+            </button>
           )}
         </div>
 

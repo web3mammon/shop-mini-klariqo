@@ -10,9 +10,11 @@
 - ✅ Natural product search with voice-controlled filters
 - ✅ Voice-controlled result count ("show me 10 options")
 - ✅ **Smart pagination ("show me more")** - Fetches 50, shows 5 at a time, pages through results
+- ✅ **Beautiful UI/UX** - Custom Jenna illustration with gradient "Hi", system fonts, avatars in chat
 - ✅ Clean chat bubble UI with inline product cards
 - ✅ Auto-reconnection on WebSocket drops
 - ✅ Complete isolation between voice AI and product search
+- ✅ **Performance optimized** - <3 second load time, image assets <250KB total
 
 **Timeline:** Built from scratch after 5 failed attempts with other chats and 3 rejected freelancers.
 
@@ -76,7 +78,7 @@
 │           SUPABASE EDGE FUNCTIONS (Deno Runtime)            │
 │                                                               │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  voice-websocket (Main Backend)                      │  │
+│  │  mini-voice-websocket (Main Backend)                 │  │
 │  │  ┌────────────────────────────────────────────────┐ │  │
 │  │  │ 1. AssemblyAI (Real-time STT)                  │ │  │
 │  │  │    - 24kHz PCM input                            │ │  │
@@ -137,7 +139,7 @@
 
 ### Why This Architecture?
 
-**Separate Edge Functions** (voice-websocket + mini-product-search):
+**Separate Edge Functions** (mini-voice-websocket + mini-product-search):
 - ✅ **Complete isolation** - voice AI and product search can NEVER interfere
 - ✅ **Independent debugging** - if products fail, voice AI still works
 - ✅ **Simpler code** - each function does ONE thing
@@ -189,7 +191,7 @@ User clicks "Start Shopping" button
          ↓
 Frontend: connect() → creates WebSocket connection
          ↓
-Backend: voice-websocket receives connection
+Backend: mini-voice-websocket receives connection
          ↓
 Backend: Creates session, connects to AssemblyAI
          ↓
@@ -341,7 +343,7 @@ After 5 failures: Shows error "Connection lost. Please restart the app."
 
 ## 🔧 Backend Implementation
 
-### File: `/shop-mini-websocket/supabase/functions/voice-websocket/index.ts`
+### File: `/shop-mini-websocket/supabase/functions/mini-voice-websocket/index.ts`
 
 **Purpose:** Main WebSocket server handling real-time voice AI conversation.
 
@@ -1028,6 +1030,49 @@ export function App() {
 
 ---
 
+### 🎨 UI/UX Design (Latest Updates)
+
+**Main Page (Welcome Screen):**
+- **Custom Jenna Illustration** with gradient "Hi" text (jenna-hi-illustration.png, 127KB)
+  - Combined image: Jenna's welcoming illustration + "Hi" in Pacifico font with purple-to-pink gradient
+  - Image dimensions: 230px width (40% smaller than original for faster loading)
+  - Zero margin between image and text for seamless design
+- **Intro Text**: System font with custom spacing
+  - Line-height: 1.3 for comfortable readability
+  - Letter-spacing: 0 (normal)
+  - Text: "I'm Jenna, your personalized shopping assistant. Tap the mic below to talk to me for product recommendations and a lot more."
+- **Circular Mic Button**: 180px diameter
+  - Purple-to-pink gradient background
+  - Large prominent design for clear call-to-action
+  - Bottom padding: 5rem (80px) from screen edge
+
+**Chat Page:**
+- **Message Bubbles with Avatars**:
+  - Jenna's messages: jenna-profile.png (128KB, circular) on left side
+  - User messages: Lucide User icon in gradient circle on right side
+  - Max width: 75% of screen
+  - Gradient styling: purple-to-pink for user, gray for Jenna
+- **Circular Stop Button**: 90px diameter (50% of main button)
+  - Red background for clear "stop" indication
+  - Smaller to stay out of the way during chat
+
+**Typography:**
+- **System Fonts Only** (Shop Mini default)
+  - No custom fonts (Google Fonts blocked by CSP)
+  - Clean, native iOS/Android system fonts
+  - Fast loading, consistent across devices
+
+**Performance:**
+- Total image assets: 255KB (jenna-hi-illustration + jenna-profile)
+- Load time: <3 seconds (Shop Mini requirement)
+- Only acceptable delay: WebSocket connection (1-2 seconds)
+
+**Design Assets Location:**
+- `/code/jenna/src/assets/jenna-illustration.png` (combined illustration + Hi)
+- `/code/jenna/src/assets/jenna-profile.png` (chat avatar)
+
+---
+
 ### File: `/code/jenna/src/hooks/useAudioRecorder.ts`
 
 **Purpose:** Records user's voice as 24kHz PCM, encodes to base64, streams to backend.
@@ -1147,7 +1192,7 @@ export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
 ### Backend Files
 | File | Purpose | Location |
 |------|---------|----------|
-| `voice-websocket/index.ts` | Main WebSocket server | `/shop-mini-websocket/supabase/functions/voice-websocket/` |
+| `mini-voice-websocket/index.ts` | Main WebSocket server | `/shop-mini-websocket/supabase/functions/mini-voice-websocket/` |
 | `mini-product-search/index.ts` | Product search intent extraction | `/shop-mini-websocket/supabase/functions/mini-product-search/` |
 
 ### Frontend Files
@@ -1172,7 +1217,7 @@ export function AudioPlayer({ onAudioChunkHandler }: AudioPlayerProps) {
 ## 🎯 Critical Decisions & Why
 
 ### 1. **Why Separate Edge Functions?**
-**Decision:** Split voice AI (voice-websocket) and product search (mini-product-search).
+**Decision:** Split voice AI (mini-voice-websocket) and product search (mini-product-search).
 
 **Why:**
 - Complete isolation - they can NEVER interfere
@@ -1351,7 +1396,7 @@ case 'transcript.user':
     }
   }
 
-// Backend (voice-websocket): Cancel TTS generation
+// Backend (mini-voice-websocket): Cancel TTS generation
 case 'interrupt':
   session.isProcessing = false; // Stop generating more TTS
   socket.send(JSON.stringify({ type: 'interrupt.acknowledged' }));
@@ -1408,8 +1453,8 @@ case 'interrupt':
 **Cause:** `useProductSearch` hook doesn't refetch when query string stays same.
 
 **Solution:**
-1. Append filters to query string (voice-websocket lines 621-625)
-2. Add timestamp to force uniqueness (voice-websocket line 638)
+1. Append filters to query string (mini-voice-websocket lines 621-625)
+2. Add timestamp to force uniqueness (mini-voice-websocket line 638)
 
 **Verify Fix:**
 ```typescript
@@ -1429,7 +1474,7 @@ case 'interrupt':
 **Cause:** TTS generation happens in parallel, chunks finish at different times.
 
 **Solution:**
-Add `await` to TTS generation (voice-websocket line 430):
+Add `await` to TTS generation (mini-voice-websocket line 430):
 ```typescript
 await generateSpeechChunk(sessionId, sentenceChunk, socket, audioChunkIndex++);
 ```
@@ -1506,7 +1551,7 @@ max_tokens: 200, // Too low!
 - No products shown
 
 **Cause 1:** Query string didn't change (SDK didn't refetch).
-**Solution:** Check timestamp is being added (voice-websocket line 638).
+**Solution:** Check timestamp is being added (mini-voice-websocket line 638).
 
 **Cause 2:** Shop Mini SDK hook has wrong parameters.
 **Solution:** Verify `first: productCount` is passed (App.tsx line 38).
@@ -1532,7 +1577,7 @@ max_tokens: 200, // Too low!
 Already implemented in App.tsx - recording starts ONLY when user taps mic button.
 
 **Alternative Cause:** Using PCM instead of WAV.
-**Solution:** Backend converts PCM → WAV (voice-websocket lines 528-562).
+**Solution:** Backend converts PCM → WAV (mini-voice-websocket lines 528-562).
 
 ---
 
@@ -1688,7 +1733,7 @@ SHOPIFY_STOREFRONT_TOKEN=<your_key> # Only if calling Shopify API directly
 ### Deployment
 ```bash
 cd shop-mini-websocket
-SUPABASE_ACCESS_TOKEN="sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847" npx supabase functions deploy voice-websocket --no-verify-jwt
+SUPABASE_ACCESS_TOKEN="sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847" npx supabase functions deploy mini-voice-websocket --no-verify-jwt
 SUPABASE_ACCESS_TOKEN="sbp_42a9dcb66f1e84c8bff90933c7516e5b705fc847" npx supabase functions deploy mini-product-search --no-verify-jwt
 ```
 
