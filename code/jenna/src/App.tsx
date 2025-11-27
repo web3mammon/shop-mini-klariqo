@@ -4,8 +4,8 @@ import { Mic, User, Square } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { AudioPlayer } from './components/AudioPlayer';
-import jennaIllustration from './assets/jenna-illustration.png';
-import jennaProfile from './assets/jenna-profile.png';
+import jennaIllustration from './assets/jenna-illustration.webp';
+import jennaProfile from './assets/jenna-profile.webp';
 
 interface AudioPlayerControls {
   stop: () => void;
