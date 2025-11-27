@@ -75,9 +75,26 @@ export function useAudioRecorder(onAudioData: (audioBase64: string) => void) {
       console.log('[AudioRecorder] Recording started (24kHz PCM streaming)');
 
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      setError(`Microphone access denied: ${errorMessage}`);
       console.error('[AudioRecorder] Error:', err);
+
+      // User-friendly error messages based on error type
+      if (err instanceof Error) {
+        if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+          setError('Microphone permission denied. Please allow microphone access to use voice shopping.');
+        } else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') {
+          setError('No microphone found. Please connect a microphone to use voice shopping.');
+        } else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') {
+          setError('Microphone is already in use. Please close other apps using your microphone and try again.');
+        } else if (err.name === 'OverconstrainedError') {
+          setError('Your microphone doesn\'t support the required audio settings. Please try a different device.');
+        } else {
+          setError('Unable to access microphone. Please check your device settings and try again.');
+        }
+      } else {
+        setError('Unable to start voice recording. Please try again.');
+      }
+
+      setIsRecording(false);
     }
   }, [requestPermission, onAudioData]);
 

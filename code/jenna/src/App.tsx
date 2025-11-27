@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
 import { useState, useEffect, useRef } from 'react';
-import { MinisRouter, useProductSearch, ProductCard, Image } from '@shopify/shop-minis-react';
+import { MinisRouter, useProductSearch, ProductLink, Image } from '@shopify/shop-minis-react';
 import { Mic, User, Square } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
@@ -24,8 +24,8 @@ interface AudioPlayerControls {
 export function App() {
   // Search query state
   const [searchQuery, setSearchQuery] = useState('');
-  const [startIndex, setStartIndex] = useState(0); // Where to start showing products
-  const [displayCount, setDisplayCount] = useState(5); // How many to show
+  const [startIndex, setStartIndex] = useState(0);
+  const [displayCount, setDisplayCount] = useState(5);
 
   // AudioPlayer controls for interrupt detection
   const audioPlayerControlsRef = useRef<AudioPlayerControls | null>(null);
@@ -46,43 +46,32 @@ export function App() {
     setAudioPlayerControls, // NEW: Pass audio controls for interrupt detection
   } = useWebSocket();
 
-  // Product search - ALWAYS fetch 50 products (not 5!)
+  // Product search - fetch 50 products
   const { products, loading: productsLoading } = useProductSearch({
     query: searchQuery,
     filters: {},
-    first: 50, // ✨ Always fetch 50, display only what user wants
+    first: 50,
   });
 
-  // Handle NEW SEARCH (new query or filter change)
+  // Handle NEW SEARCH
   useEffect(() => {
     if (productSearch?.query) {
-      console.log('[App] 🔍 NEW SEARCH requested:', productSearch.query, 'Initial display count:', productSearch.count);
-      // Append timestamp to make query unique
+      console.log('[App] 🔍 NEW SEARCH requested:', productSearch.query);
       const uniqueQuery = `${productSearch.query} ${productSearch.timestamp || Date.now()}`;
       setSearchQuery(uniqueQuery);
-      setStartIndex(0); // ✨ Reset to start from beginning
+      setStartIndex(0);
       setDisplayCount(productSearch.count || 5);
-      console.log('[App] ✅ Will fetch 50 products, show products 1-' + (productSearch.count || 5));
     }
   }, [productSearch]);
 
-  // Handle PAGINATION (show NEXT page, not append!)
+  // Handle PAGINATION
   useEffect(() => {
     if (shouldFetchMore) {
       const newCount = productSearch?.count || 5;
-      const newStartIndex = startIndex + displayCount; // Move forward by current displayCount
-
-      console.log('[App] 🔄 PAGINATION requested - showing NEXT page (replacing current)');
-      console.log('[App] Previous range: products', startIndex + 1, 'to', startIndex + displayCount);
-      console.log('[App] New start index:', newStartIndex);
-      console.log('[App] New display count:', newCount);
-      console.log('[App] New range: products', newStartIndex + 1, 'to', newStartIndex + newCount);
-
-      setStartIndex(newStartIndex); // ✨ Move to next page
-      setDisplayCount(newCount); // Update count (user might say "show me 10 more")
+      const newStartIndex = startIndex + displayCount;
+      setStartIndex(newStartIndex);
+      setDisplayCount(newCount);
       resetFetchMore();
-
-      console.log('[App] ✅ Now showing products', newStartIndex + 1, 'to', newStartIndex + newCount);
     }
   }, [shouldFetchMore, startIndex, displayCount, productSearch, resetFetchMore]);
 
@@ -106,6 +95,15 @@ export function App() {
       stopRecording();
     }
   }, [conversationState, isRecording, isConnected, startRecording, stopRecording]);
+
+  // Clear products when disconnecting
+  useEffect(() => {
+    if (!isConnected) {
+      setSearchQuery('');
+      setStartIndex(0);
+      setDisplayCount(5);
+    }
+  }, [isConnected]);
 
   return (
     <MinisRouter>
@@ -161,13 +159,12 @@ export function App() {
               </div>
             ))}
 
-            {/* Products display - shown as separate message after AI response */}
+            {/* Products display - Using ProductLink (compact) */}
             {products && products.length > 0 && (
               <div className="flex justify-start">
-                <div className="max-w-[90%] space-y-3">
-                  {/* ✨ Show current page only (startIndex to startIndex + displayCount) */}
+                <div className="max-w-[90%] space-y-2">
                   {products.slice(startIndex, startIndex + displayCount).map((product) => (
-                    <ProductCard key={product.id} product={product} />
+                    <ProductLink key={product.id} product={product} />
                   ))}
                 </div>
               </div>
@@ -192,7 +189,16 @@ export function App() {
 
           {error && (
             <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-600">{error}</p>
+              <p className="text-sm text-red-600 mb-2">{error}</p>
+              <button
+                onClick={() => {
+                  disconnect();
+                  setTimeout(() => connect(), 500);
+                }}
+                className="text-sm text-red-700 font-medium underline hover:text-red-800"
+              >
+                Try Again
+              </button>
             </div>
           )}
         </div>
@@ -203,9 +209,9 @@ export function App() {
             <button
               onClick={connect}
               className="rounded-full bg-gradient-to-br from-purple-600 to-pink-600 shadow-2xl flex items-center justify-center active:scale-95 transition-transform"
-              style={{ width: '180px', height: '180px' }}
+              style={{ width: '90px', height: '90px' }}
             >
-              <Mic className="text-white" style={{ width: '84px', height: '84px' }} />
+              <Mic className="text-white" style={{ width: '40px', height: '40px' }} />
             </button>
           ) : (
             <button
