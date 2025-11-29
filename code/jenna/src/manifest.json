@@ -1,20 +1,16 @@
 {
-  "name": "Voice Shopper by Klariqo",
-  "description": "Say it, shop it. Your voice shopping assistant.",
+  "name": "Talk to Buy by Klariqo",
+  "description": "Your voice assistant for hands-free browsing.",
   "permissions": [
     "MICROPHONE"
   ],
   "scopes": [
-    "openid",
-    "profile",
-    "product_list:read",
-    "product_list:write",
-    "products:recommendations:read"
+    "product_list:write"
   ],
   "privacy_policy_url": "https://klariqo.com/privacy-policy/",
   "terms_url": "https://klariqo.com/tos/",
   "trusted_domains": [
     "btqccksigmohyjdxgrrj.supabase.co"
   ],
-  "handle": "voice-shopper-by-klariqo"
+  "handle": "talk-to-buy-by-klariqo"
 }
