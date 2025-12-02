@@ -1,11 +1,13 @@
 import { useState, useEffect, useRef } from 'react';
 import { MinisRouter, useProductSearch, ProductLink, Image, Button } from '@shopify/shop-minis-react';
-import { Mic, User, Square } from 'lucide-react';
+import { Mic, User, Pause } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { AudioPlayer } from './components/AudioPlayer';
 import jennaIllustration from './assets/jenna-illustration.webp';
 import jennaProfile from './assets/jenna-profile.webp';
+// Greeting audio hosted on Supabase storage
+const JENNA_GREETING_AUDIO_URL = 'https://btqccksigmohyjdxgrrj.supabase.co/storage/v1/object/public/audio-snippets/mini-jenna-greeting.mp3';
 
 interface AudioPlayerControls {
   stop: () => void;
@@ -28,6 +30,13 @@ export function App() {
 
   // AudioPlayer controls for interrupt detection
   const audioPlayerControlsRef = useRef<AudioPlayerControls | null>(null);
+
+  // Greeting state
+  const [greetingShown, setGreetingShown] = useState(false);
+  const greetingAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  // Jenna's greeting text (matches the MP3)
+  const JENNA_GREETING = "Hey there! It's Jenna, your personal shopping assistant. How can I help you today?";
 
   // WebSocket connection
   const {
@@ -100,8 +109,35 @@ export function App() {
       setSearchQuery('');
       setStartIndex(0);
       setDisplayCount(5);
+      setGreetingShown(false);
     }
   }, [isConnected]);
+
+  // Play greeting and show chat bubble when connecting
+  const handleStartChat = () => {
+    // Play greeting audio
+    if (!greetingAudioRef.current) {
+      greetingAudioRef.current = new Audio(JENNA_GREETING_AUDIO_URL);
+    }
+    greetingAudioRef.current.play();
+
+    // Connect to WebSocket first (this changes isConnected, hiding the intro screen)
+    connect();
+
+    // Delay showing greeting bubble so it doesn't appear over the intro screen
+    setTimeout(() => {
+      setGreetingShown(true);
+    }, 800);
+  };
+
+  // Stop greeting audio when disconnecting
+  const handleStopChat = () => {
+    if (greetingAudioRef.current) {
+      greetingAudioRef.current.pause();
+      greetingAudioRef.current.currentTime = 0;
+    }
+    disconnect();
+  };
 
   return (
     <MinisRouter>
@@ -127,6 +163,20 @@ export function App() {
 
           {/* Message bubbles with avatars */}
           <div className="space-y-3">
+            {/* Jenna's greeting bubble (shown first when connected) */}
+            {greetingShown && (
+              <div className="flex gap-2 items-end justify-start">
+                <Image
+                  src={jennaProfile}
+                  alt="Jenna"
+                  className="w-8 h-8 rounded-full flex-shrink-0"
+                />
+                <div className="max-w-[75%] px-4 py-2 rounded-2xl bg-gray-100 text-gray-900 rounded-bl-sm">
+                  <p className="text-sm leading-relaxed">{JENNA_GREETING}</p>
+                </div>
+              </div>
+            )}
+
             {messages.map((msg, index) => (
               <div key={index} className={`flex gap-2 items-end ${msg.isUser ? 'justify-end' : 'justify-start'}`}>
                 {/* Jenna Avatar (left side for AI messages) */}
@@ -201,11 +251,11 @@ export function App() {
           )}
         </div>
 
-        {/* Bottom Buttons */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center pb-20">
+        {/* Bottom Buttons - Fixed to viewport */}
+        <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center pb-20 z-50">
           {!isConnected ? (
             <Button
-              onClick={connect}
+              onClick={handleStartChat}
               variant="default"
               size="lg"
               className="shadow-2xl"
@@ -215,13 +265,13 @@ export function App() {
             </Button>
           ) : (
             <Button
-              onClick={disconnect}
-              variant="destructive"
+              onClick={handleStopChat}
+              variant="secondary"
               size="lg"
               className="shadow-2xl"
             >
-              <Square className="mr-2" />
-              Stop
+              <Pause className="mr-2" />
+              Talk later
             </Button>
           )}
         </div>

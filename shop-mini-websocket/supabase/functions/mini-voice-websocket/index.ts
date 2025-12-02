@@ -552,8 +552,8 @@ async function generateSpeechChunk(sessionId: string, text: string, socket: WebS
     return;
   }
 
-  // Warmer female voice
-  const voiceId = 'jCF6ebPopunk73liLZIE';
+  // Jenna voice (matches greeting MP3)
+  const voiceId = 'HJoB5tEZ4MKnaBUwdrqS';
 
   // Clean text for TTS (remove SEARCH_PRODUCTS markers)
   let speechText = text.replace(/SEARCH_PRODUCTS[\s\S]*$/g, '').trim();
