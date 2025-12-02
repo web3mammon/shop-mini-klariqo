@@ -32,6 +32,7 @@ interface UseWebSocketReturn {
   resetFetchMore: () => void; // reset flag after fetchMore() called
   setAudioPlayerControls: (controls: AudioPlayerControls) => void; // for interrupt detection
   setOnConnectionReady: (callback: () => void) => void; // callback when connection.established received
+  setOnNavigateToCart: (callback: () => void) => void; // callback when navigation.cart received
 }
 
 const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/mini-voice-websocket';
@@ -63,6 +64,9 @@ export function useWebSocket(): UseWebSocketReturn {
 
   // Connection ready callback ref
   const onConnectionReadyRef = useRef<(() => void) | null>(null);
+
+  // Navigate to cart callback ref
+  const onNavigateToCartRef = useRef<(() => void) | null>(null);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -172,6 +176,13 @@ export function useWebSocket(): UseWebSocketReturn {
             setError(data.message);
             break;
 
+          case 'navigation.cart':
+            // Navigate to cart requested by backend
+            if (onNavigateToCartRef.current) {
+              onNavigateToCartRef.current();
+            }
+            break;
+
           default:
             break;
         }
@@ -262,6 +273,10 @@ export function useWebSocket(): UseWebSocketReturn {
     onConnectionReadyRef.current = callback;
   }, []);
 
+  const setOnNavigateToCart = useCallback((callback: () => void) => {
+    onNavigateToCartRef.current = callback;
+  }, []);
+
   return {
     isConnected,
     conversationState,
@@ -276,5 +291,6 @@ export function useWebSocket(): UseWebSocketReturn {
     resetFetchMore,
     setAudioPlayerControls,
     setOnConnectionReady,
+    setOnNavigateToCart,
   };
 }

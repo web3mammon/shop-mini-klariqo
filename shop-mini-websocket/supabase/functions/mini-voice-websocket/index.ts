@@ -357,6 +357,12 @@ CRITICAL RULE - CART AND FAVORITES (VERY IMPORTANT):
 - If user asks to add to cart/favorites, say: "Just tap the heart to save it, or tap the product to add it to your cart!"
 - Be honest about your capabilities - you help users FIND products, they take action themselves
 
+CART NAVIGATION FEATURE:
+- You CAN open the user's cart for them!
+- If user says "show me my cart", "open cart", "view cart", "what's in my cart" → Say "Sure! Opening your cart now!" and include OPEN_CART at the end of your response
+- If user asks to "checkout" or "go to checkout" → Say "I can't take you directly to checkout, but I can open your cart! Want me to do that?"
+- ONLY include OPEN_CART when the user explicitly wants to see their cart
+
 PRODUCT COUNT FEATURE:
 - Users can ask for more: "show me 10", "give me 20 options", "I want to see more"
 - CRITICAL: ONLY mention a specific number if the user EXPLICITLY said that number
@@ -377,6 +383,15 @@ You: "I can't add items directly, but just tap on the product and you can add it
 
 User: "Save that to favorites"
 You: "Just tap the little heart icon on any product you love to save it!"
+
+User: "Show me my cart"
+You: "Sure! Opening your cart now! OPEN_CART"
+
+User: "What's in my cart?"
+You: "Let me open that up for you! OPEN_CART"
+
+User: "Take me to checkout"
+You: "I can't take you directly to checkout, but I can open your cart for you! Want me to do that?"
 
 User: "I need a dress for a wedding"
 You: "Oh how exciting! Let me search for some beautiful wedding guest dresses!"
@@ -471,21 +486,26 @@ Remember: You're Jenna - warm, stylish, supportive. You LOVE helping people look
                     const remainingText = textBuffer.substring(lastEndingPos + 1).trim();
 
                     if (sentenceChunk) {
-                      console.log(`[Groq] Sentence: "${sentenceChunk}"`);
+                      // Strip OPEN_CART marker from display/TTS text
+                      const displayText = sentenceChunk.replace(/\s*OPEN_CART\s*/g, '').trim();
 
-                      // Check socket state before sending
-                      if (socket.readyState !== WebSocket.OPEN) {
-                        console.log('[Groq] Socket closed, aborting stream');
-                        return;
+                      if (displayText) {
+                        console.log(`[Groq] Sentence: "${displayText}"`);
+
+                        // Check socket state before sending
+                        if (socket.readyState !== WebSocket.OPEN) {
+                          console.log('[Groq] Socket closed, aborting stream');
+                          return;
+                        }
+
+                        socket.send(JSON.stringify({
+                          type: 'text.chunk',
+                          text: displayText
+                        }));
+
+                        // Generate TTS sequentially to guarantee chunk order
+                        await generateSpeechChunk(sessionId, displayText, socket, audioChunkIndex++);
                       }
-
-                      socket.send(JSON.stringify({
-                        type: 'text.chunk',
-                        text: sentenceChunk
-                      }));
-
-                      // Generate TTS sequentially to guarantee chunk order
-                      await generateSpeechChunk(sessionId, sentenceChunk, socket, audioChunkIndex++);
                       textBuffer = remainingText;
                     }
                   }
@@ -501,19 +521,24 @@ Remember: You're Jenna - warm, stylish, supportive. You LOVE helping people look
 
     // Send any remaining text
     if (textBuffer.trim()) {
-      console.log(`[Groq] Final chunk: "${textBuffer}"`);
+      // Strip OPEN_CART marker from display/TTS text
+      const finalDisplayText = textBuffer.replace(/\s*OPEN_CART\s*/g, '').trim();
 
-      if (socket.readyState !== WebSocket.OPEN) {
-        console.log('[Groq] Socket closed, aborting final chunk');
-        return;
+      if (finalDisplayText) {
+        console.log(`[Groq] Final chunk: "${finalDisplayText}"`);
+
+        if (socket.readyState !== WebSocket.OPEN) {
+          console.log('[Groq] Socket closed, aborting final chunk');
+          return;
+        }
+
+        socket.send(JSON.stringify({
+          type: 'text.chunk',
+          text: finalDisplayText
+        }));
+
+        await generateSpeechChunk(sessionId, finalDisplayText, socket, audioChunkIndex++);
       }
-
-      socket.send(JSON.stringify({
-        type: 'text.chunk',
-        text: textBuffer.trim()
-      }));
-
-      await generateSpeechChunk(sessionId, textBuffer.trim(), socket, audioChunkIndex++);
     }
 
     const aiResponse = fullResponse || 'I apologize, I didn\'t catch that.';
@@ -523,10 +548,21 @@ Remember: You're Jenna - warm, stylish, supportive. You LOVE helping people look
       total_chunks: audioChunkIndex
     }));
 
-    // Update conversation history
+    // Check for OPEN_CART command in response
+    if (aiResponse.includes('OPEN_CART')) {
+      console.log('[Navigation] Cart navigation requested');
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({
+          type: 'navigation.cart'
+        }));
+      }
+    }
+
+    // Update conversation history (remove OPEN_CART marker from stored response)
+    const cleanedResponse = aiResponse.replace(/\s*OPEN_CART\s*/g, '').trim();
     session.conversationHistory.push(
       { role: 'user', content: userInput },
-      { role: 'assistant', content: aiResponse }
+      { role: 'assistant', content: cleanedResponse }
     );
 
     // Call product search (fire-and-forget, non-blocking)

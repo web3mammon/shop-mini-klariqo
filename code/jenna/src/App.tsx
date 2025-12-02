@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { MinisRouter, useProductSearch, ProductLink, Image, Button } from '@shopify/shop-minis-react';
+import { MinisRouter, useProductSearch, ProductLink, Image, Button, useShopNavigation } from '@shopify/shop-minis-react';
 import { Mic, User, Pause } from 'lucide-react';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioRecorder } from './hooks/useAudioRecorder';
@@ -54,6 +54,7 @@ export function App() {
     resetFetchMore,
     setAudioPlayerControls, // Pass audio controls for interrupt detection
     setOnConnectionReady, // Callback when WebSocket is fully connected
+    setOnNavigateToCart, // Callback when backend requests cart navigation
   } = useWebSocket();
 
   // Product search - fetch 50 products
@@ -62,6 +63,16 @@ export function App() {
     filters: {},
     first: 50,
   });
+
+  // Shop navigation - for cart access
+  const { navigateToCart } = useShopNavigation();
+
+  // Set up cart navigation callback
+  useEffect(() => {
+    setOnNavigateToCart(() => {
+      navigateToCart();
+    });
+  }, [navigateToCart, setOnNavigateToCart]);
 
   // Handle NEW SEARCH
   useEffect(() => {
