@@ -23,14 +23,15 @@ interface UseWebSocketReturn {
   conversationState: 'idle' | 'connecting' | 'listening';
   messages: Array<{ text: string; isUser: boolean }>;
   productSearch: ProductSearchIntent | null;
-  shouldFetchMore: boolean; // NEW: triggers fetchMore() in App.tsx
+  shouldFetchMore: boolean; // triggers fetchMore() in App.tsx
   error: string | null;
   connect: () => void;
   disconnect: () => void;
   sendAudioChunk: (audioBase64: string) => void;
   setAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
-  resetFetchMore: () => void; // NEW: reset flag after fetchMore() called
-  setAudioPlayerControls: (controls: AudioPlayerControls) => void; // NEW: for interrupt detection
+  resetFetchMore: () => void; // reset flag after fetchMore() called
+  setAudioPlayerControls: (controls: AudioPlayerControls) => void; // for interrupt detection
+  setOnConnectionReady: (callback: () => void) => void; // callback when connection.established received
 }
 
 const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/mini-voice-websocket';
@@ -60,6 +61,9 @@ export function useWebSocket(): UseWebSocketReturn {
   const audioPlayerControlsRef = useRef<AudioPlayerControls | null>(null);
   const hasInterruptedRef = useRef(false); // Track if we've interrupted for current turn
 
+  // Connection ready callback ref
+  const onConnectionReadyRef = useRef<(() => void) | null>(null);
+
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       return;
@@ -82,6 +86,10 @@ export function useWebSocket(): UseWebSocketReturn {
 
         switch (data.type) {
           case 'connection.established':
+            // Fire the callback when connection is truly ready
+            if (onConnectionReadyRef.current) {
+              onConnectionReadyRef.current();
+            }
             break;
 
           case 'ping':
@@ -128,6 +136,13 @@ export function useWebSocket(): UseWebSocketReturn {
             break;
 
           case 'audio.complete':
+            break;
+
+          case 'audio.stop':
+            // Stop any currently playing audio (e.g., when no products found)
+            if (audioPlayerControlsRef.current) {
+              audioPlayerControlsRef.current.stop();
+            }
             break;
 
           case 'products.search':
@@ -243,6 +258,10 @@ export function useWebSocket(): UseWebSocketReturn {
     audioPlayerControlsRef.current = controls;
   }, []);
 
+  const setOnConnectionReady = useCallback((callback: () => void) => {
+    onConnectionReadyRef.current = callback;
+  }, []);
+
   return {
     isConnected,
     conversationState,
@@ -256,5 +275,6 @@ export function useWebSocket(): UseWebSocketReturn {
     setAudioChunkHandler,
     resetFetchMore,
     setAudioPlayerControls,
+    setOnConnectionReady,
   };
 }

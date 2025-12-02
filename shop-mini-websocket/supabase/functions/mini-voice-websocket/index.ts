@@ -150,6 +150,12 @@ Deno.serve(async (req) => {
           console.log('[Interrupt] AI interrupted, ready for new input');
           break;
 
+        case 'products.notFound':
+          // Handle no products found - generate voice response
+          console.log('[Products] No products found for query:', data.query);
+          await handleNoProductsFound(sessionId, data.query, socket);
+          break;
+
         default:
           console.warn('[WebSocket] Unknown message type:', data.type);
       }
@@ -341,44 +347,45 @@ YOUR EXPERTISE:
 CRITICAL RULE - NEVER DESCRIBE SPECIFIC PRODUCTS:
 - NEVER mention specific product names, brands, or prices
 - NEVER say things like "Here's a Nike Air Max for $99" or "I found a red dress from Zara"
-- Instead, say things like "Let me pull those up for you!" or "I've got some great options!"
+- Instead, say things like "Let me search for that!" or "Let me see what I can find!"
 - The app will show actual products automatically - you just acknowledge the request warmly
+- NEVER promise a specific number of results - just say you'll look for options
+
+CRITICAL RULE - CART AND FAVORITES (VERY IMPORTANT):
+- You can ONLY show products to users - you CANNOT add items to cart or favorites
+- NEVER say "I'll add that to your cart" or "Added to favorites" - this is FALSE
+- If user asks to add to cart/favorites, say: "Just tap the heart to save it, or tap the product to add it to your cart!"
+- Be honest about your capabilities - you help users FIND products, they take action themselves
 
 PRODUCT COUNT FEATURE:
-- By default, you show 5 product options
 - Users can ask for more: "show me 10", "give me 20 options", "I want to see more"
 - CRITICAL: ONLY mention a specific number if the user EXPLICITLY said that number
-  - If user says "show me 10" → You say "Here are ten options!"
-  - If user says "show me more" → You say "Here are more options!" (DON'T make up a number!)
-- Also mention they can adjust: "You can tell me how many you'd like to see!"
+- If user just says "show me more" → Say "Let me find more for you!" (DON'T make up a number!)
 
 CONVERSATION EXAMPLES:
 User: "Show me red sneakers under $100"
-You: "Ooh yes! Let me find you some awesome red sneakers under a hundred dollars!"
+You: "Ooh love it! Let me search for some red sneakers under a hundred dollars for you!"
 
 User: "Show me 10 options"
-You: "Sure! Here are ten options for you!"
+You: "Sure thing! Let me pull up ten options for you!"
 
 User: "I want to see more"
-You: "You got it! Here are more options. You can also tell me exactly how many you'd like!"
+You: "You got it! Let me find some more options for you!"
 
-User: "A few more please"
-You: "Sure! Here you go. Let me know if you want to see a specific number of options!"
+User: "Add that to my cart"
+You: "I can't add items directly, but just tap on the product and you can add it to your cart from there!"
 
-User: "Do you have that in size 10?"
-You: "Absolutely! Let me check what's available in size ten for you."
-
-User: "Can I get matching socks?"
-You: "Great idea! Let me find some matching socks for you."
+User: "Save that to favorites"
+You: "Just tap the little heart icon on any product you love to save it!"
 
 User: "I need a dress for a wedding"
-You: "Oh how exciting! Wedding shopping is the best. Let me find some beautiful dresses!"
+You: "Oh how exciting! Let me search for some beautiful wedding guest dresses!"
 
 User: "I can't find anything"
 You: "Aw, let's try something different! What kind of vibe are you going for?"
 
 User: "That's perfect!"
-You: "Yay! I'm so glad you love it! Anything else you need?"
+You: "Yay! So glad you found something! Anything else I can help you find?"
 
 FORMATTING RULES:
 - NEVER use markdown, bullets, or special formatting
@@ -575,7 +582,7 @@ async function generateSpeechChunk(sessionId: string, text: string, socket: WebS
           text: speechText,
           model_id: 'eleven_flash_v2_5',
           voice_settings: {
-            stability: 0.5,
+            stability: 0.75,
             similarity_boost: 0.75,
             style: 0,
             use_speaker_boost: true,
@@ -697,5 +704,56 @@ async function searchProducts(sessionId: string, userInput: string, aiResponse: 
     console.error('[ProductSearch] Error:', error);
     // Don't send error to frontend - product search is optional
   }
+}
+
+// ============================================================================
+// HANDLE NO PRODUCTS FOUND - Generate voice response
+// ============================================================================
+async function handleNoProductsFound(sessionId: string, query: string, socket: WebSocket) {
+  const session = sessions.get(sessionId);
+  if (!session) return;
+
+  console.log('[NoProducts] Stopping any current audio and generating new response');
+
+  // Stop any currently playing audio (like interrupt) - frontend will handle this
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: 'audio.stop',
+      reason: 'no_products_found'
+    }));
+  }
+
+  // Small delay to let frontend stop audio before we send new audio
+  await new Promise(resolve => setTimeout(resolve, 100));
+
+  // Generate a natural "no products found" response
+  const noProductsMessage = `Hmm, I couldn't find any ${query.split(' ').slice(0, 3).join(' ')} right now. Want to try something else, or maybe tweak what you're looking for?`;
+
+  console.log('[NoProducts] Generating voice response:', noProductsMessage);
+
+  // Send text to frontend
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: 'text.chunk',
+      text: noProductsMessage
+    }));
+  }
+
+  // Generate TTS
+  await generateSpeechChunk(sessionId, noProductsMessage, socket, 0);
+
+  // Send audio complete
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({
+      type: 'audio.complete',
+      total_chunks: 1
+    }));
+  }
+
+  // Add to conversation history
+  session.conversationHistory.push({
+    role: 'assistant',
+    content: noProductsMessage
+  });
 }
 

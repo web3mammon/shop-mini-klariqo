@@ -6,7 +6,8 @@ import { useAudioRecorder } from './hooks/useAudioRecorder';
 import { AudioPlayer } from './components/AudioPlayer';
 import jennaIllustration from './assets/jenna-illustration.webp';
 import jennaProfile from './assets/jenna-profile.webp';
-// Greeting audio hosted on Supabase storage
+// Greeting audio hosted on Supabase storage (public asset, not a secret)
+// eslint-disable-next-line shop-minis/no-secrets
 const JENNA_GREETING_AUDIO_URL = 'https://btqccksigmohyjdxgrrj.supabase.co/storage/v1/object/public/audio-snippets/mini-jenna-greeting.mp3';
 
 interface AudioPlayerControls {
@@ -51,7 +52,8 @@ export function App() {
     sendAudioChunk,
     setAudioChunkHandler,
     resetFetchMore,
-    setAudioPlayerControls, // NEW: Pass audio controls for interrupt detection
+    setAudioPlayerControls, // Pass audio controls for interrupt detection
+    setOnConnectionReady, // Callback when WebSocket is fully connected
   } = useWebSocket();
 
   // Product search - fetch 50 products
@@ -113,21 +115,21 @@ export function App() {
     }
   }, [isConnected]);
 
-  // Play greeting and show chat bubble when connecting
-  const handleStartChat = () => {
-    // Play greeting audio
+  // Play greeting and show chat bubble when connection is established
+  const playGreeting = () => {
     if (!greetingAudioRef.current) {
       greetingAudioRef.current = new Audio(JENNA_GREETING_AUDIO_URL);
     }
     greetingAudioRef.current.play();
+    setGreetingShown(true);
+  };
 
-    // Connect to WebSocket first (this changes isConnected, hiding the intro screen)
+  const handleStartChat = () => {
+    // Set up callback to fire when WebSocket sends connection.established
+    setOnConnectionReady(playGreeting);
+
+    // Connect to WebSocket
     connect();
-
-    // Delay showing greeting bubble so it doesn't appear over the intro screen
-    setTimeout(() => {
-      setGreetingShown(true);
-    }, 800);
   };
 
   // Stop greeting audio when disconnecting
@@ -144,7 +146,7 @@ export function App() {
       <div className="relative w-full min-h-screen bg-white flex flex-col overflow-hidden">
 
         {/* Chat Messages */}
-        <div className="flex-1 overflow-y-auto pb-32 px-6 py-8">
+        <div className="flex-1 overflow-y-auto pb-40 px-6 py-8">
           {messages.length === 0 && !isConnected && (
             <div className="flex flex-col items-center justify-center h-full text-center px-6">
               {/* Jenna Illustration with "Hi" text combined */}
@@ -208,11 +210,20 @@ export function App() {
 
             {/* Products display - Using ProductLink (compact) */}
             {products && products.length > 0 && (
-              <div className="flex justify-start">
-                <div className="max-w-[90%] space-y-2">
+              <div className="flex justify-start w-full">
+                <div className="w-full space-y-2 px-1">
                   {products.slice(startIndex, startIndex + displayCount).map((product) => (
                     <ProductLink key={product.id} product={product} />
                   ))}
+                </div>
+              </div>
+            )}
+
+            {/* No products found state */}
+            {!productsLoading && productSearch?.query && products && products.length === 0 && (
+              <div className="flex justify-start">
+                <div className="bg-gray-100 px-4 py-3 rounded-2xl rounded-bl-sm">
+                  <p className="text-sm text-gray-600">No products found. Try a different search!</p>
                 </div>
               </div>
             )}
