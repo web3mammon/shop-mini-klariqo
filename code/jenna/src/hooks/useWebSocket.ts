@@ -33,6 +33,7 @@ interface UseWebSocketReturn {
   setAudioPlayerControls: (controls: AudioPlayerControls) => void; // for interrupt detection
   setOnConnectionReady: (callback: () => void) => void; // callback when connection.established received
   setOnNavigateToCart: (callback: () => void) => void; // callback when navigation.cart received
+  sendNoProductsFound: (query: string) => void; // notify backend when no products found
 }
 
 const WEBSOCKET_URL = 'wss://btqccksigmohyjdxgrrj.supabase.co/functions/v1/mini-voice-websocket';
@@ -277,6 +278,15 @@ export function useWebSocket(): UseWebSocketReturn {
     onNavigateToCartRef.current = callback;
   }, []);
 
+  const sendNoProductsFound = useCallback((query: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'products.notFound',
+        query
+      }));
+    }
+  }, []);
+
   return {
     isConnected,
     conversationState,
@@ -292,5 +302,6 @@ export function useWebSocket(): UseWebSocketReturn {
     setAudioPlayerControls,
     setOnConnectionReady,
     setOnNavigateToCart,
+    sendNoProductsFound,
   };
 }

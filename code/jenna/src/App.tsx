@@ -55,6 +55,7 @@ export function App() {
     setAudioPlayerControls, // Pass audio controls for interrupt detection
     setOnConnectionReady, // Callback when WebSocket is fully connected
     setOnNavigateToCart, // Callback when backend requests cart navigation
+    sendNoProductsFound, // Notify backend when no products found
   } = useWebSocket();
 
   // Product search - fetch 50 products
@@ -95,6 +96,19 @@ export function App() {
     }
   }, [shouldFetchMore, startIndex, displayCount, productSearch, resetFetchMore]);
 
+  // Notify backend when no products found (triggers voice response)
+  const lastNotifiedQueryRef = useRef<string | null>(null);
+  useEffect(() => {
+    // Only trigger when: loading finished, we have a search query, products is empty
+    // And this is a new search (not already notified for this query)
+    if (!productsLoading && searchQuery && products && products.length === 0) {
+      if (lastNotifiedQueryRef.current !== searchQuery) {
+        lastNotifiedQueryRef.current = searchQuery;
+        sendNoProductsFound(productSearch?.query || searchQuery);
+      }
+    }
+  }, [productsLoading, searchQuery, products, productSearch, sendNoProductsFound]);
+
   // Audio recorder
   const { isRecording, startRecording, stopRecording } = useAudioRecorder(
     (chunk) => sendAudioChunk(chunk)
@@ -116,18 +130,26 @@ export function App() {
     }
   }, [conversationState, isRecording, isConnected, startRecording, stopRecording]);
 
-  // Clear products when disconnecting
+  // Clear products when disconnecting (but keep greetingShown if messages exist for reconnect scenario)
   useEffect(() => {
     if (!isConnected) {
       setSearchQuery('');
       setStartIndex(0);
       setDisplayCount(5);
-      setGreetingShown(false);
+      // Only reset greeting if no messages (fresh disconnect vs reconnect)
+      if (messages.length === 0) {
+        setGreetingShown(false);
+      }
     }
-  }, [isConnected]);
+  }, [isConnected, messages.length]);
 
   // Play greeting and show chat bubble when connection is established
   const playGreeting = () => {
+    // Don't replay greeting if conversation already has messages (reconnect scenario)
+    if (messages.length > 0 || greetingShown) {
+      return;
+    }
+
     if (!greetingAudioRef.current) {
       greetingAudioRef.current = new Audio(JENNA_GREETING_AUDIO_URL);
     }

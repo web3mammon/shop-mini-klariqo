@@ -759,8 +759,8 @@ async function handleNoProductsFound(sessionId: string, query: string, socket: W
     }));
   }
 
-  // Small delay to let frontend stop audio before we send new audio
-  await new Promise(resolve => setTimeout(resolve, 100));
+  // Delay to let frontend stop audio before we send new audio
+  await new Promise(resolve => setTimeout(resolve, 500));
 
   // Generate a natural "no products found" response
   const noProductsMessage = `Hmm, I couldn't find any ${query.split(' ').slice(0, 3).join(' ')} right now. Want to try something else, or maybe tweak what you're looking for?`;
