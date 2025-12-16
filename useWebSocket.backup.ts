@@ -256,11 +256,6 @@ export function useWebSocket(): UseWebSocketReturn {
   }, []);
 
   const sendAudioChunk = useCallback((audioBase64: string) => {
-    // Don't send audio while AI is speaking (prevents echo loop on devices with poor AEC)
-    if (audioPlayerControlsRef.current?.getIsPlaying()) {
-      return;
-    }
-
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'audio.chunk',
