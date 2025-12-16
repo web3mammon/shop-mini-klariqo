@@ -49,6 +49,7 @@ export function App() {
     error,
     connect,
     disconnect,
+    clearChat, // Clear messages and products for "Start new chat"
     sendAudioChunk,
     setAudioChunkHandler,
     resetFetchMore,
@@ -130,16 +131,10 @@ export function App() {
     }
   }, [conversationState, isRecording, isConnected, startRecording, stopRecording]);
 
-  // Clear products when disconnecting (but keep greetingShown if messages exist for reconnect scenario)
+  // Reset greeting state only when truly fresh (no messages)
   useEffect(() => {
-    if (!isConnected) {
-      setSearchQuery('');
-      setStartIndex(0);
-      setDisplayCount(5);
-      // Only reset greeting if no messages (fresh disconnect vs reconnect)
-      if (messages.length === 0) {
-        setGreetingShown(false);
-      }
+    if (!isConnected && messages.length === 0) {
+      setGreetingShown(false);
     }
   }, [isConnected, messages.length]);
 
@@ -165,13 +160,22 @@ export function App() {
     connect();
   };
 
-  // Stop greeting audio when disconnecting
+  // Stop greeting audio when disconnecting (Talk later)
   const handleStopChat = () => {
     if (greetingAudioRef.current) {
       greetingAudioRef.current.pause();
       greetingAudioRef.current.currentTime = 0;
     }
     disconnect();
+  };
+
+  // Clear everything and show splash screen (Start new chat)
+  const handleStartNewChat = () => {
+    clearChat();
+    setSearchQuery('');
+    setStartIndex(0);
+    setDisplayCount(5);
+    setGreetingShown(false);
   };
 
   return (
@@ -297,17 +301,8 @@ export function App() {
 
         {/* Bottom Buttons - Fixed to viewport */}
         <div className="fixed bottom-0 left-0 right-0 bg-gradient-to-t from-white via-white to-transparent pt-16 pb-safe-offset-8 px-6 flex justify-center pb-20 z-50">
-          {!isConnected ? (
-            <Button
-              onClick={handleStartChat}
-              variant="default"
-              size="lg"
-              className="shadow-2xl"
-            >
-              <Mic className="mr-2" />
-              Start Voice Chat
-            </Button>
-          ) : (
+          {isConnected ? (
+            // Connected: Show "Talk later" button
             <Button
               onClick={handleStopChat}
               variant="secondary"
@@ -316,6 +311,27 @@ export function App() {
             >
               <Pause className="mr-2" />
               Talk later
+            </Button>
+          ) : (messages.length > 0 || greetingShown) ? (
+            // Disconnected with history: Show "Start new chat" button
+            <Button
+              onClick={handleStartNewChat}
+              variant="secondary"
+              size="lg"
+              className="shadow-2xl"
+            >
+              Start new chat
+            </Button>
+          ) : (
+            // Fresh/Splash: Show "Start Voice Chat" button
+            <Button
+              onClick={handleStartChat}
+              variant="default"
+              size="lg"
+              className="shadow-2xl"
+            >
+              <Mic className="mr-2" />
+              Start Voice Chat
             </Button>
           )}
         </div>

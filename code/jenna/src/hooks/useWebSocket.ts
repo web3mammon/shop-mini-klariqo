@@ -27,6 +27,7 @@ interface UseWebSocketReturn {
   error: string | null;
   connect: () => void;
   disconnect: () => void;
+  clearChat: () => void; // clear messages and products (for "Start new chat")
   sendAudioChunk: (audioBase64: string) => void;
   setAudioChunkHandler: (handler: (audioBase64: string, chunkIndex: number) => void) => void;
   resetFetchMore: () => void; // reset flag after fetchMore() called
@@ -239,14 +240,19 @@ export function useWebSocket(): UseWebSocketReturn {
       wsRef.current = null;
       setIsConnected(false);
       setConversationState('idle');
-      setMessages([]);
-      setProductSearch(null);
+      // Keep messages and productSearch so user can still see conversation and products
 
       // Reset intentional disconnect flag after a delay
       setTimeout(() => {
         isIntentionalDisconnectRef.current = false;
       }, 1000);
     }
+  }, []);
+
+  // Clear chat history (for "Start new chat" button)
+  const clearChat = useCallback(() => {
+    setMessages([]);
+    setProductSearch(null);
   }, []);
 
   const sendAudioChunk = useCallback((audioBase64: string) => {
@@ -296,6 +302,7 @@ export function useWebSocket(): UseWebSocketReturn {
     error,
     connect,
     disconnect,
+    clearChat,
     sendAudioChunk,
     setAudioChunkHandler,
     resetFetchMore,

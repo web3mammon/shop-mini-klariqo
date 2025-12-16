@@ -22,7 +22,10 @@
       "Bash(git fetch:*)",
       "Bash(npm run lint)",
       "Bash(npx tsc:*)",
-      "Bash(npx eslint .)"
+      "Bash(npx eslint .)",
+      "Bash(find:*)",
+      "Bash(cp:*)",
+      "Bash(cd:*)"
     ],
     "deny": [],
     "ask": []
